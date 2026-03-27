@@ -328,9 +328,9 @@ func (s *DepositService) ProcessWebhook(ctx context.Context, paymentID string) e
 	return nil
 }
 
-func (s *DepositService) getPaymentStatus(id string) (status string, amount float64, externalRef string, err error) {
+func (s *DepositService) getPaymentStatus(ctx context.Context, id string) (status string, amount float64, externalRef string, err error) {
 	url := fmt.Sprintf("https://api.mercadopago.com/v1/payments/%s", id)
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return "", 0, "", err
 	}
@@ -365,10 +365,10 @@ func (s *DepositService) getPaymentStatus(id string) (status string, amount floa
 }
 
 // GetAccountBalance retrieves the Mercado Pago account balance
-func (s *DepositService) GetAccountBalance() (*MPBalanceResponse, error) {
+func (s *DepositService) GetAccountBalance(ctx context.Context) (*MPBalanceResponse, error) {
 	url := "https://api.mercadopago.com/users/me/mercadopago_account/balance"
 
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -399,10 +399,10 @@ func (s *DepositService) GetAccountBalance() (*MPBalanceResponse, error) {
 }
 
 // RefundPayment refunds a payment in Mercado Pago
-func (s *DepositService) RefundPayment(paymentID string) error {
+func (s *DepositService) RefundPayment(ctx context.Context, paymentID string) error {
 	url := fmt.Sprintf("https://api.mercadopago.com/v1/payments/%s/refunds", paymentID)
 
-	req, err := http.NewRequest("POST", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
