@@ -128,18 +128,7 @@ func (r *PaymentRepository) UpdateStatus(ctx context.Context, tx *sql.Tx, id str
 }
 
 // GetUserPaymentStats gets payment statistics for a user
-func (r *PaymentRepository) GetUserPaymentStats(ctx context.Context, userIDStr string) (*models.PaymentStats, error) {
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		// Return default stats on error
-		defaultStats := &models.PaymentStats{
-			TotalSpent:          0,
-			ProductsPurchased:   0,
-			ActiveSubscriptions: 0,
-		}
-		return defaultStats, fmt.Errorf("invalid user ID: %w", err)
-	}
-
+func (r *PaymentRepository) GetUserPaymentStats(ctx context.Context, userID uuid.UUID) (*models.PaymentStats, error) {
 	// Total spent from completed payments
 	querySpent := `
 		SELECT COALESCE(SUM(CASE WHEN status = 'COMPLETED' THEN final_amount ELSE 0 END), 0) as total_spent
@@ -175,12 +164,7 @@ func (r *PaymentRepository) GetUserPaymentStats(ctx context.Context, userIDStr s
 }
 
 // GetRecentPayments gets recent payments for a user
-func (r *PaymentRepository) GetRecentPayments(ctx context.Context, userIDStr string, limit int) ([]models.PaymentInfo, error) {
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		return []models.PaymentInfo{}, fmt.Errorf("invalid user ID: %w", err)
-	}
-
+func (r *PaymentRepository) GetRecentPayments(ctx context.Context, userID uuid.UUID, limit int) ([]models.PaymentInfo, error) {
 	query := `
 		SELECT
 			COALESCE(id, '00000000-0000-0000-0000-000000000000') as id,
@@ -221,12 +205,7 @@ func (r *PaymentRepository) GetRecentPayments(ctx context.Context, userIDStr str
 }
 
 // GetMonthlySpending gets monthly spending for a user
-func (r *PaymentRepository) GetMonthlySpending(ctx context.Context, userIDStr string, months int) ([]models.MonthlySpend, error) {
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		return []models.MonthlySpend{}, fmt.Errorf("invalid user ID: %w", err)
-	}
-
+func (r *PaymentRepository) GetMonthlySpending(ctx context.Context, userID uuid.UUID, months int) ([]models.MonthlySpend, error) {
 	// Use parameterized query to avoid SQL injection
 	query := `
 		SELECT
@@ -262,17 +241,12 @@ func (r *PaymentRepository) GetMonthlySpending(ctx context.Context, userIDStr st
 }
 
 // GetNextBillingSummary returns total next billing amount and list of dates for active subscriptions
-func (r *PaymentRepository) GetNextBillingSummary(ctx context.Context, userIDStr string) (float64, []string, error) {
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		return 0, nil, fmt.Errorf("invalid user ID: %w", err)
-	}
-
+func (r *PaymentRepository) GetNextBillingSummary(ctx context.Context, userID uuid.UUID) (float64, []string, error) {
 	// Sum of price_per_month for active subscriptions
 	var total float64
 	if err := r.db.QueryRowContext(ctx, `
-		SELECT COALESCE(SUM(price_per_month), 0) 
-		FROM subscriptions 
+		SELECT COALESCE(SUM(price_per_month), 0)
+		FROM subscriptions
 		WHERE user_id = $1 AND status = 'ACTIVE'
 	`, userID).Scan(&total); err != nil {
 		return 0, nil, fmt.Errorf("failed to sum next billing: %w", err)
@@ -280,8 +254,8 @@ func (r *PaymentRepository) GetNextBillingSummary(ctx context.Context, userIDStr
 
 	// Collect next billing dates for active subscriptions
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT next_billing_date 
-		FROM subscriptions 
+		SELECT next_billing_date
+		FROM subscriptions
 		WHERE user_id = $1 AND status = 'ACTIVE'
 		ORDER BY next_billing_date ASC
 	`, userID)
@@ -306,12 +280,7 @@ func (r *PaymentRepository) GetNextBillingSummary(ctx context.Context, userIDStr
 }
 
 // GetUserSubscriptionsMinimal returns list of subscriptions with minimal fields for a user
-func (r *PaymentRepository) GetUserSubscriptionsMinimal(ctx context.Context, userIDStr string) ([]models.SubscriptionMini, error) {
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		return nil, fmt.Errorf("invalid user ID: %w", err)
-	}
-
+func (r *PaymentRepository) GetUserSubscriptionsMinimal(ctx context.Context, userID uuid.UUID) ([]models.SubscriptionMini, error) {
 	query := `
 		SELECT id, plan_name, price_per_month, created_at
 		FROM subscriptions
@@ -341,12 +310,7 @@ func (r *PaymentRepository) GetUserSubscriptionsMinimal(ctx context.Context, use
 }
 
 // GetUserSubscriptionInvoices retrieves all subscription invoices for a user
-func (r *PaymentRepository) GetUserSubscriptionInvoices(ctx context.Context, userIDStr string) ([]models.SubscriptionInvoice, error) {
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		return nil, fmt.Errorf("invalid user ID: %w", err)
-	}
-
+func (r *PaymentRepository) GetUserSubscriptionInvoices(ctx context.Context, userID uuid.UUID) ([]models.SubscriptionInvoice, error) {
 	query := `
 		SELECT id, plan_name, price_per_month, next_billing_date, status
 		FROM subscriptions
@@ -377,12 +341,12 @@ func (r *PaymentRepository) GetUserSubscriptionInvoices(ctx context.Context, use
 		now := time.Now()
 		if status == "ACTIVE" {
 			if now.After(nextBillingDate) {
-				s.Status = "overdue"
+				s.Status = models.InvoiceStatusOverdue
 			} else {
-				s.Status = "due"
+				s.Status = models.InvoiceStatusDue
 			}
 		} else {
-			s.Status = "paid" // Assuming other statuses are paid
+			s.Status = models.InvoiceStatusPaid // Assuming other statuses are paid
 		}
 
 		invoices = append(invoices, s)

@@ -34,18 +34,22 @@ type Invoice struct {
 	Date   time.Time `json:"date"`
 }
 
-// SubscriptionInvoice representa uma fatura de assinatura com mais detalhes
+// SubscriptionInvoice represents a subscription invoice with detailed information
 type SubscriptionInvoice struct {
-	SubscriptionID uuid.UUID `json:"subscription_id"`
-	PlanName       string    `json:"plan_name"`
-	Amount         float64   `json:"amount"`
-	DueDate        time.Time `json:"due_date"`
-	Status         string    `json:"status"` // e.g., "paid", "due", "overdue"
+	SubscriptionID uuid.UUID   `json:"subscription_id"`
+	PlanName       string      `json:"plan_name"`
+	Amount         float64     `json:"amount"`
+	DueDate        time.Time   `json:"due_date"`
+	Status         InvoiceStatus `json:"status"` // e.g., "paid", "due", "overdue"
 }
 
-// InvoiceHistoryResponse é a resposta para a consulta de histórico de faturas
+// InvoiceStatus represents the status of an invoice
+type InvoiceStatus string
+
+// InvoiceHistoryResponse is the response for invoice history queries
 type InvoiceHistoryResponse struct {
 	PaidInvoices      []SubscriptionInvoice `json:"paid_invoices"`
 	NextInvoice       *SubscriptionInvoice  `json:"next_invoice"`
 	OverdueInvoices   []SubscriptionInvoice `json:"overdue_invoices"`
+	DueInvoices       []SubscriptionInvoice `json:"due_invoices"`
 }

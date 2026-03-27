@@ -164,11 +164,11 @@ func main() {
 	permissionHandler := handlers.NewPermissionHandler(permissionService)
 
 	// Permission Advanced Handler
-	permissionAdvancedService := service.NewPermissionAdvancedService(db.DB)
+	permissionAdvancedService := service.NewPermissionAdvancedService(permissionRepo, db.DB)
 	permissionAdvancedHandler := handlers.NewPermissionAdvancedHandler(permissionAdvancedService)
 
 	// Email Management Handler
-	emailManagementHandler := handlers.NewEmailManagementHandler(emailService, permissionService)
+	emailManagementHandler := handlers.NewEmailManagementHandler(emailService)
 
 	// Health Check Monitor
 	healthHandler := handlers.NewHealthHandler(db)
@@ -410,9 +410,8 @@ func main() {
 			// Email Management - Requires EMAILS permission
 			admin.POST("/emails/send", emailManagementHandler.SendEmail)
 			admin.GET("/emails/logs", emailManagementHandler.GetEmailLogs)
-			admin.GET("/emails/logs/:id", emailManagementHandler.GetEmailLog)
+			admin.GET("/emails/logs/:id", emailManagementHandler.GetEmailLogByID)
 			admin.POST("/emails/logs/:id/resend", emailManagementHandler.ResendEmail)
-			admin.GET("/emails/stats", emailManagementHandler.GetEmailStats)
 
 			// Permission Management - Requires ROLES permission (DIRECTION only)
 			admin.GET("/permissions/roles", permissionHandler.GetAllRolePermissions)
@@ -447,7 +446,7 @@ func main() {
 
 		// User permissions route (any authenticated user)
 		v1.GET("/permissions/me", middleware.AuthMiddleware(cfg.JWT.Secret), permissionHandler.GetMyPermissions)
-		v1.GET("/permissions/notifications", middleware.AuthMiddleware(cfg.JWT.Secret), permissionAdvancedHandler.GetPermissionNotifications)
+		v1.GET("/permissions/notifications", middleware.AuthMiddleware(cfg.JWT.Secret), permissionAdvancedHandler.GetUserNotifications)
 		v1.PUT("/permissions/notifications/:id/read", middleware.AuthMiddleware(cfg.JWT.Secret), permissionAdvancedHandler.MarkNotificationAsRead)
 
 		// Role Management - POST/DELETE requer AdminPanel+ (hierarquia validada no handler) — MODERADO-05

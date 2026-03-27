@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -17,17 +18,17 @@ func NewPermissionRepository(db *sql.DB) *PermissionRepository {
 	return &PermissionRepository{db: db}
 }
 
-// GetUserPermissions retorna todas as permissões de um usuário baseado em seus cargos
-func (r *PermissionRepository) GetUserPermissions(userID string) (*models.UserPermissions, error) {
-	// Buscar cargos do usuário
+// GetUserPermissions returns all permissions for a user based on their roles (WITH CONTEXT)
+func (r *PermissionRepository) GetUserPermissions(ctx context.Context, userID string) (*models.UserPermissions, error) {
+	// Get user roles
 	rolesQuery := `
-		SELECT DISTINCT role 
-		FROM user_roles 
-		WHERE user_id = $1 
+		SELECT DISTINCT role
+		FROM user_roles
+		WHERE user_id = $1
 		AND (expires_at IS NULL OR expires_at > NOW())
 	`
 
-	rows, err := r.db.Query(rolesQuery, userID)
+	rows, err := r.db.QueryContext(ctx, rolesQuery, userID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user roles: %w", err)
 	}
@@ -43,7 +44,7 @@ func (r *PermissionRepository) GetUserPermissions(userID string) (*models.UserPe
 	}
 
 	if len(roles) == 0 {
-		// Usuário sem cargos - retorna permissões vazias
+		// User without roles - return empty permissions
 		return &models.UserPermissions{
 			UserID:      userID,
 			Roles:       []string{},
@@ -51,14 +52,14 @@ func (r *PermissionRepository) GetUserPermissions(userID string) (*models.UserPe
 		}, nil
 	}
 
-	// Buscar permissões dos cargos
+	// Get role permissions
 	permQuery := `
-		SELECT DISTINCT resource, action 
-		FROM role_permissions 
+		SELECT DISTINCT resource, action
+		FROM role_permissions
 		WHERE role = ANY($1)
 	`
 
-	permRows, err := r.db.Query(permQuery, pq.Array(roles))
+	permRows, err := r.db.QueryContext(ctx, permQuery, pq.Array(roles))
 	if err != nil {
 		return nil, fmt.Errorf("failed to get role permissions: %w", err)
 	}
@@ -82,8 +83,33 @@ func (r *PermissionRepository) GetUserPermissions(userID string) (*models.UserPe
 	}, nil
 }
 
-// GetRolePermissions retorna todas as permissões de um cargo específico
-func (r *PermissionRepository) GetRolePermissions(role string) ([]models.RolePermission, error) {
+// HasPermission checks if a user has a SPECIFIC permission (FAST - SELECT EXISTS)
+// This is the CORRECT way - returns single boolean, no memory waste
+func (r *PermissionRepository) HasPermission(ctx context.Context, userID, resource, action string) (bool, error) {
+	query := `
+		SELECT EXISTS(
+			SELECT 1
+			FROM user_roles ur
+			JOIN role_permissions rp ON ur.role = rp.role
+			WHERE ur.user_id = $1
+			AND rp.resource = $2
+			AND rp.action = $3
+			AND (ur.expires_at IS NULL OR ur.expires_at > NOW())
+			LIMIT 1
+		)
+	`
+
+	var hasPerm bool
+	err := r.db.QueryRowContext(ctx, query, userID, resource, action).Scan(&hasPerm)
+	if err != nil {
+		return false, fmt.Errorf("failed to check permission: %w", err)
+	}
+
+	return hasPerm, nil
+}
+
+// GetRolePermissions returns all permissions for a specific role (WITH CONTEXT)
+func (r *PermissionRepository) GetRolePermissions(ctx context.Context, role string) ([]models.RolePermission, error) {
 	query := `
 		SELECT id, role, resource, action, created_at
 		FROM role_permissions
@@ -91,7 +117,7 @@ func (r *PermissionRepository) GetRolePermissions(role string) ([]models.RolePer
 		ORDER BY resource, action
 	`
 
-	rows, err := r.db.Query(query, role)
+	rows, err := r.db.QueryContext(ctx, query, role)
 	if err != nil {
 		return nil, err
 	}
@@ -109,38 +135,38 @@ func (r *PermissionRepository) GetRolePermissions(role string) ([]models.RolePer
 	return permissions, nil
 }
 
-// AddRolePermission adiciona uma permissão a um cargo
-func (r *PermissionRepository) AddRolePermission(role string, resource models.ResourceType, action models.ActionType) error {
+// AddRolePermission adds a permission to a role (WITH CONTEXT)
+func (r *PermissionRepository) AddRolePermission(ctx context.Context, role string, resource models.ResourceType, action models.ActionType) error {
 	query := `
 		INSERT INTO role_permissions (role, resource, action)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (role, resource, action) DO NOTHING
 	`
 
-	_, err := r.db.Exec(query, role, resource, action)
+	_, err := r.db.ExecContext(ctx, query, role, resource, action)
 	return err
 }
 
-// RemoveRolePermission remove uma permissão de um cargo
-func (r *PermissionRepository) RemoveRolePermission(role string, resource models.ResourceType, action models.ActionType) error {
+// RemoveRolePermission removes a permission from a role (WITH CONTEXT)
+func (r *PermissionRepository) RemoveRolePermission(ctx context.Context, role string, resource models.ResourceType, action models.ActionType) error {
 	query := `
 		DELETE FROM role_permissions
 		WHERE role = $1 AND resource = $2 AND action = $3
 	`
 
-	_, err := r.db.Exec(query, role, resource, action)
+	_, err := r.db.ExecContext(ctx, query, role, resource, action)
 	return err
 }
 
-// GetAllRolePermissions retorna todas as permissões de todos os cargos
-func (r *PermissionRepository) GetAllRolePermissions() (map[string][]models.RolePermission, error) {
+// GetAllRolePermissions returns all permissions for all roles (WITH CONTEXT)
+func (r *PermissionRepository) GetAllRolePermissions(ctx context.Context) (map[string][]models.RolePermission, error) {
 	query := `
 		SELECT id, role, resource, action, created_at
 		FROM role_permissions
 		ORDER BY role, resource, action
 	`
 
-	rows, err := r.db.Query(query)
+	rows, err := r.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +184,62 @@ func (r *PermissionRepository) GetAllRolePermissions() (map[string][]models.Role
 	return result, nil
 }
 
-// LogEmail registra um email enviado
+// AssignRoleToUser assigns a role to a user (WITH CONTEXT)
+func (r *PermissionRepository) AssignRoleToUser(ctx context.Context, userID, role string) error {
+	query := `
+		INSERT INTO user_roles (user_id, role, assigned_at)
+		VALUES ($1, $2, NOW())
+		ON CONFLICT (user_id, role) DO UPDATE SET expires_at = NULL
+	`
+
+	_, err := r.db.ExecContext(ctx, query, userID, role)
+	return err
+}
+
+// RemoveRoleFromUser removes a role from a user (WITH CONTEXT)
+func (r *PermissionRepository) RemoveRoleFromUser(ctx context.Context, userID, role string) error {
+	query := `
+		DELETE FROM user_roles
+		WHERE user_id = $1 AND role = $2
+	`
+
+	_, err := r.db.ExecContext(ctx, query, userID, role)
+	return err
+}
+
+// GetUserRoles returns all roles for a user (WITH CONTEXT)
+func (r *PermissionRepository) GetUserRoles(ctx context.Context, userID string) ([]string, error) {
+	query := `
+		SELECT DISTINCT role
+		FROM user_roles
+		WHERE user_id = $1
+		AND (expires_at IS NULL OR expires_at > NOW())
+		ORDER BY role
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var roles []string
+	for rows.Next() {
+		var role string
+		if err := rows.Scan(&role); err != nil {
+			return nil, err
+		}
+		roles = append(roles, role)
+	}
+
+	return roles, nil
+}
+
+// Email logging methods moved to EmailRepository (SRP violation fix)
+// These methods are deprecated and will be removed in future versions
+// Use EmailRepository.LogEmail, GetEmailLogs, GetEmailLogByID instead
+
+// LogEmail registra um email enviado (DEPRECATED - use EmailRepository)
 func (r *PermissionRepository) LogEmail(log *models.EmailLog) error {
 	metadataJSON, err := json.Marshal(log.Metadata)
 	if err != nil {
@@ -171,7 +252,7 @@ func (r *PermissionRepository) LogEmail(log *models.EmailLog) error {
 		RETURNING id, sent_at
 	`
 
-	err = r.db.QueryRow(
+	err = r.db.QueryRowContext(context.Background(),
 		query,
 		log.FromEmail,
 		log.ToEmail,
@@ -187,7 +268,7 @@ func (r *PermissionRepository) LogEmail(log *models.EmailLog) error {
 	return err
 }
 
-// GetEmailLogs retorna o histórico de emails com paginação e filtros
+// GetEmailLogs retorna o histórico de emails (DEPRECATED - use EmailRepository)
 func (r *PermissionRepository) GetEmailLogs(page, limit int, filters map[string]string) ([]models.EmailLog, int, error) {
 	offset := (page - 1) * limit
 
@@ -223,7 +304,7 @@ func (r *PermissionRepository) GetEmailLogs(page, limit int, filters map[string]
 	// Contar total
 	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM email_logs %s", whereClause)
 	var total int
-	if err := r.db.QueryRow(countQuery, args...).Scan(&total); err != nil {
+	if err := r.db.QueryRowContext(context.Background(), countQuery, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
@@ -237,7 +318,7 @@ func (r *PermissionRepository) GetEmailLogs(page, limit int, filters map[string]
 		LIMIT $%d OFFSET $%d
 	`, whereClause, argCount, argCount+1)
 
-	rows, err := r.db.Query(query, args...)
+	rows, err := r.db.QueryContext(context.Background(), query, args...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -277,7 +358,7 @@ func (r *PermissionRepository) GetEmailLogs(page, limit int, filters map[string]
 	return logs, total, nil
 }
 
-// GetEmailLogByID retorna um email específico por ID
+// GetEmailLogByID retorna um email específico por ID (DEPRECATED - use EmailRepository)
 func (r *PermissionRepository) GetEmailLogByID(id string) (*models.EmailLog, error) {
 	query := `
 		SELECT id, from_email, to_email, subject, body, status, error_message, sent_by, sent_at, message_id, metadata
@@ -288,7 +369,7 @@ func (r *PermissionRepository) GetEmailLogByID(id string) (*models.EmailLog, err
 	var log models.EmailLog
 	var metadataJSON []byte
 
-	err := r.db.QueryRow(query, id).Scan(
+	err := r.db.QueryRowContext(context.Background(), query, id).Scan(
 		&log.ID,
 		&log.FromEmail,
 		&log.ToEmail,

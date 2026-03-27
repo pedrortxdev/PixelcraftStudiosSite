@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"log"
@@ -16,6 +17,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/pixelcraft/api/internal/apierrors"
+	"github.com/pixelcraft/api/internal/models"
 )
 
 // EmailConfig holds SMTP configuration
@@ -40,6 +44,17 @@ type EmailService struct {
 	db          *sql.DB
 	configCache *ConfigCache
 	pool        *SMTPPool
+	repo        *EmailRepository
+}
+
+// EmailRepository handles email logging operations
+type EmailRepository struct {
+	db *sql.DB
+}
+
+// NewEmailRepository creates a new EmailRepository
+func NewEmailRepository(db *sql.DB) *EmailRepository {
+	return &EmailRepository{db: db}
 }
 
 // NewEmailService creates a new EmailService with connection pooling
@@ -68,11 +83,15 @@ func NewEmailService(db *sql.DB) *EmailService {
 	// Initialize SMTP connection pool
 	pool := NewSMTPPool(config, 5) // Pool of 5 connections
 
+	// Initialize email repository
+	repo := NewEmailRepository(db)
+
 	return &EmailService{
 		config:      config,
 		db:          db,
 		configCache: cache,
 		pool:        pool,
+		repo:        repo,
 	}
 }
 
@@ -487,4 +506,196 @@ func (p *SMTPPool) Close() {
 			conn.client.Close()
 		}
 	}
+}
+
+// Email logging methods (SRP - moved from PermissionService)
+
+// LogEmail logs an sent email
+func (s *EmailService) LogEmail(ctx context.Context, log *models.EmailLog) error {
+	return s.repo.LogEmail(ctx, log)
+}
+
+// GetEmailLogs returns email logs with pagination and proper validation
+func (s *EmailService) GetEmailLogs(ctx context.Context, page, limit int, filters map[string]string) ([]models.EmailLog, int, error) {
+	// PROPER VALIDATION: Return sentinel errors instead of hardcoded strings
+	if limit < 1 {
+		return nil, 0, apierrors.ErrInvalidPaginationLimit
+	}
+	if limit > 100 {
+		return nil, 0, fmt.Errorf("%w: limit cannot exceed 100 (requested: %d)", apierrors.ErrInvalidPaginationLimit, limit)
+	}
+	if page < 1 {
+		return nil, 0, apierrors.ErrInvalidPaginationPage
+	}
+
+	return s.repo.GetEmailLogs(ctx, page, limit, filters)
+}
+
+// GetEmailLogByID returns a specific email log by ID
+func (s *EmailService) GetEmailLogByID(ctx context.Context, id string) (*models.EmailLog, error) {
+	return s.repo.GetEmailLogByID(ctx, id)
+}
+
+// EmailRepository interface for email logging (to be created)
+type EmailRepositoryInterface interface {
+	LogEmail(ctx context.Context, log *models.EmailLog) error
+	GetEmailLogs(ctx context.Context, page, limit int, filters map[string]string) ([]models.EmailLog, int, error)
+	GetEmailLogByID(ctx context.Context, id string) (*models.EmailLog, error)
+}
+
+// LogEmail logs a sent email
+func (r *EmailRepository) LogEmail(ctx context.Context, log *models.EmailLog) error {
+	metadataJSON, err := json.Marshal(log.Metadata)
+	if err != nil {
+		return fmt.Errorf("failed to marshal metadata: %w", err)
+	}
+
+	query := `
+		INSERT INTO email_logs (from_email, to_email, subject, body, status, error_message, sent_by, message_id, metadata)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		RETURNING id, sent_at
+	`
+
+	err = r.db.QueryRowContext(ctx,
+		query,
+		log.FromEmail,
+		log.ToEmail,
+		log.Subject,
+		log.Body,
+		log.Status,
+		log.ErrorMessage,
+		log.SentBy,
+		log.MessageID,
+		metadataJSON,
+	).Scan(&log.ID, &log.SentAt)
+
+	return err
+}
+
+// GetEmailLogs returns email logs with pagination
+func (r *EmailRepository) GetEmailLogs(ctx context.Context, page, limit int, filters map[string]string) ([]models.EmailLog, int, error) {
+	offset := (page - 1) * limit
+
+	// Build query with filters
+	whereClause := "WHERE 1=1"
+	args := []interface{}{}
+	argCount := 1
+
+	if from, ok := filters["from"]; ok && from != "" {
+		whereClause += fmt.Sprintf(" AND from_email ILIKE $%d", argCount)
+		args = append(args, "%"+from+"%")
+		argCount++
+	}
+
+	if to, ok := filters["to"]; ok && to != "" {
+		whereClause += fmt.Sprintf(" AND to_email ILIKE $%d", argCount)
+		args = append(args, "%"+to+"%")
+		argCount++
+	}
+
+	if status, ok := filters["status"]; ok && status != "" {
+		whereClause += fmt.Sprintf(" AND status = $%d", argCount)
+		args = append(args, status)
+		argCount++
+	}
+
+	if sentBy, ok := filters["sent_by"]; ok && sentBy != "" {
+		whereClause += fmt.Sprintf(" AND sent_by = $%d", argCount)
+		args = append(args, sentBy)
+		argCount++
+	}
+
+	// Count total
+	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM email_logs %s", whereClause)
+	var total int
+	if err := r.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	// Get logs
+	args = append(args, limit, offset)
+	query := fmt.Sprintf(`
+		SELECT id, from_email, to_email, subject, body, status, error_message, sent_by, sent_at, message_id, metadata
+		FROM email_logs
+		%s
+		ORDER BY sent_at DESC
+		LIMIT $%d OFFSET $%d
+	`, whereClause, argCount, argCount+1)
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var logs []models.EmailLog
+	for rows.Next() {
+		var log models.EmailLog
+		var metadataJSON []byte
+
+		err := rows.Scan(
+			&log.ID,
+			&log.FromEmail,
+			&log.ToEmail,
+			&log.Subject,
+			&log.Body,
+			&log.Status,
+			&log.ErrorMessage,
+			&log.SentBy,
+			&log.SentAt,
+			&log.MessageID,
+			&metadataJSON,
+		)
+		if err != nil {
+			return nil, 0, err
+		}
+
+		if len(metadataJSON) > 0 {
+			if err := json.Unmarshal(metadataJSON, &log.Metadata); err != nil {
+				log.Metadata = nil
+			}
+		}
+
+		logs = append(logs, log)
+	}
+
+	return logs, total, nil
+}
+
+// GetEmailLogByID returns a specific email log by ID
+func (r *EmailRepository) GetEmailLogByID(ctx context.Context, id string) (*models.EmailLog, error) {
+	query := `
+		SELECT id, from_email, to_email, subject, body, status, error_message, sent_by, sent_at, message_id, metadata
+		FROM email_logs
+		WHERE id = $1
+	`
+
+	var log models.EmailLog
+	var metadataJSON []byte
+
+	err := r.db.QueryRowContext(ctx, query, id).Scan(
+		&log.ID,
+		&log.FromEmail,
+		&log.ToEmail,
+		&log.Subject,
+		&log.Body,
+		&log.Status,
+		&log.ErrorMessage,
+		&log.SentBy,
+		&log.SentAt,
+		&log.MessageID,
+		&metadataJSON,
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	if len(metadataJSON) > 0 {
+		if err := json.Unmarshal(metadataJSON, &log.Metadata); err != nil {
+			log.Metadata = nil
+		}
+	}
+
+	return &log, nil
 }

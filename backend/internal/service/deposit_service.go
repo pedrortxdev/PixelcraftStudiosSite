@@ -187,7 +187,7 @@ func (s *DepositService) createPixPayment(ctx context.Context, userID uuid.UUID,
 		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
 	}
 
-	token, err := s.authService.GetToken()
+	token, err := s.authService.GetToken(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get MP token: %w", err)
 	}
@@ -252,7 +252,7 @@ func (s *DepositService) CreatePreference(ctx context.Context, userID uuid.UUID,
 		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
 	}
 
-	token, err := s.authService.GetToken()
+	token, err := s.authService.GetToken(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get MP token: %w", err)
 	}
@@ -350,7 +350,7 @@ func (s *DepositService) getPaymentStatus(ctx context.Context, id string) (statu
 		return "", 0, "", err
 	}
 
-	token, err := s.authService.GetToken()
+	token, err := s.authService.GetToken(ctx)
 	if err != nil {
 		return "", 0, "", err
 	}
@@ -388,7 +388,7 @@ func (s *DepositService) GetAccountBalance(ctx context.Context) (*MPBalanceRespo
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	token, err := s.authService.GetToken()
+	token, err := s.authService.GetToken(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get token: %w", err)
 	}
@@ -422,7 +422,7 @@ func (s *DepositService) RefundPayment(ctx context.Context, paymentID string) er
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
-	token, err := s.authService.GetToken()
+	token, err := s.authService.GetToken(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get token: %w", err)
 	}

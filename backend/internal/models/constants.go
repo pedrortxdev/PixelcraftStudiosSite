@@ -31,3 +31,10 @@ const (
 	ProductTypePhysical = "physical"
 	ProductTypeService  = "service"
 )
+
+// Invoice Status
+const (
+	InvoiceStatusPaid   = "paid"
+	InvoiceStatusDue    = "due"
+	InvoiceStatusOverdue = "overdue"
+)

@@ -58,11 +58,17 @@ var (
 
 // User Errors
 var (
-	ErrUserNotFound       = errors.New("usuário não encontrado")
-	ErrEmailAlreadyExists = errors.New("email já cadastrado")
-	ErrInvalidToken       = errors.New("token inválido ou já utilizado")
-	ErrTokenExpired       = errors.New("token expirado")
+	ErrUserNotFound        = errors.New("usuário não encontrado")
+	ErrEmailAlreadyExists  = errors.New("email já cadastrado")
+	ErrInvalidToken        = errors.New("token inválido ou já utilizado")
+	ErrTokenExpired        = errors.New("token expirado")
 	ErrInvalidVerification = errors.New("código de verificação incorreto")
+)
+
+// Pagination Errors
+var (
+	ErrInvalidPaginationLimit = errors.New("invalid pagination limit")
+	ErrInvalidPaginationPage  = errors.New("invalid pagination page")
 )
 
 // APIError details the standard JSON response format (BT-029)
@@ -177,6 +183,14 @@ func Convert(err error) APIError {
 	}
 	if errors.Is(err, ErrInvalidVerification) {
 		return APIError{Error: err.Error(), Code: "ERR_INVALID_VERIFICATION"}
+	}
+
+	// Pagination Errors
+	if errors.Is(err, ErrInvalidPaginationLimit) {
+		return APIError{Error: err.Error(), Code: "ERR_INVALID_PAGINATION_LIMIT"}
+	}
+	if errors.Is(err, ErrInvalidPaginationPage) {
+		return APIError{Error: err.Error(), Code: "ERR_INVALID_PAGINATION_PAGE"}
 	}
 
 	// Strict Fallback masking detailed Go/SQL panics in production logic (BT-030)

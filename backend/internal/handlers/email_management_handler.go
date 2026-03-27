@@ -1,28 +1,28 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/pixelcraft/api/internal/apierrors"
 	"github.com/pixelcraft/api/internal/models"
 	"github.com/pixelcraft/api/internal/service"
 )
 
 type EmailManagementHandler struct {
 	emailService *service.EmailService
-	permService  *service.PermissionService
 }
 
-func NewEmailManagementHandler(emailService *service.EmailService, permService *service.PermissionService) *EmailManagementHandler {
+func NewEmailManagementHandler(emailService *service.EmailService) *EmailManagementHandler {
 	return &EmailManagementHandler{
 		emailService: emailService,
-		permService:  permService,
 	}
 }
 
-// SendEmail envia um email e registra no log
+// SendEmail sends an email and logs it
 func (h *EmailManagementHandler) SendEmail(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 	userIDStr := userID.(string)
@@ -38,10 +38,10 @@ func (h *EmailManagementHandler) SendEmail(c *gin.Context) {
 		return
 	}
 
-	// Enviar email
+	// Send email
 	if err := h.emailService.SendEmail(c.Request.Context(), req.To, req.Subject, req.Body); err != nil {
-		// Registrar falha no log
-		h.permService.LogEmail(&models.EmailLog{
+		// Log failure
+		h.emailService.LogEmail(c.Request.Context(), &models.EmailLog{
 			FromEmail:    h.emailService.GetFromEmail(),
 			ToEmail:      req.To,
 			Subject:      req.Subject,
@@ -55,8 +55,8 @@ func (h *EmailManagementHandler) SendEmail(c *gin.Context) {
 		return
 	}
 
-	// Registrar sucesso no log
-	h.permService.LogEmail(&models.EmailLog{
+	// Log success
+	h.emailService.LogEmail(c.Request.Context(), &models.EmailLog{
 		FromEmail: h.emailService.GetFromEmail(),
 		ToEmail:   req.To,
 		Subject:   req.Subject,
@@ -68,16 +68,13 @@ func (h *EmailManagementHandler) SendEmail(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Email sent successfully"})
 }
 
-// GetEmailLogs retorna o histórico de emails
+// GetEmailLogs returns email logs with proper validation
 func (h *EmailManagementHandler) GetEmailLogs(c *gin.Context) {
-	// Paginação
+	// Pagination
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
-	if limit > 100 {
-		limit = 100 // BT-031
-	}
 
-	// Filtros
+	// Filters
 	filters := map[string]string{
 		"from":    c.Query("from"),
 		"to":      c.Query("to"),
@@ -85,8 +82,13 @@ func (h *EmailManagementHandler) GetEmailLogs(c *gin.Context) {
 		"sent_by": c.Query("sent_by"),
 	}
 
-	logs, total, err := h.permService.GetEmailLogs(page, limit, filters)
+	logs, total, err := h.emailService.GetEmailLogs(c.Request.Context(), page, limit, filters)
 	if err != nil {
+		// PROPER ERROR HANDLING: Use errors.Is() for sentinel errors
+		if errors.Is(err, apierrors.ErrInvalidPaginationLimit) || errors.Is(err, apierrors.ErrInvalidPaginationPage) {
+			c.JSON(http.StatusBadRequest, apierrors.Convert(err))
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get email logs"})
 		return
 	}
@@ -99,37 +101,37 @@ func (h *EmailManagementHandler) GetEmailLogs(c *gin.Context) {
 	})
 }
 
-// GetEmailLog retorna um email específico
-func (h *EmailManagementHandler) GetEmailLog(c *gin.Context) {
+// GetEmailLogByID returns a specific email log
+func (h *EmailManagementHandler) GetEmailLogByID(c *gin.Context) {
 	id := c.Param("id")
 
-	log, err := h.permService.GetEmailLogByID(id)
+	log, err := h.emailService.GetEmailLogByID(c.Request.Context(), id)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Email not found"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "Email log not found"})
 		return
 	}
 
 	c.JSON(http.StatusOK, log)
 }
 
-// ResendEmail reenvia um email do histórico
+// ResendEmail resends an email from history
 func (h *EmailManagementHandler) ResendEmail(c *gin.Context) {
+	id := c.Param("id")
+
 	userID, _ := c.Get("user_id")
 	userIDStr := userID.(string)
 
-	id := c.Param("id")
-
-	// Buscar email original
-	originalLog, err := h.permService.GetEmailLogByID(id)
+	// Get original email
+	originalLog, err := h.emailService.GetEmailLogByID(c.Request.Context(), id)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Email not found"})
 		return
 	}
 
-	// Reenviar
+	// Resend
 	if err := h.emailService.SendEmail(c.Request.Context(), originalLog.ToEmail, originalLog.Subject, originalLog.Body); err != nil {
-		// Registrar falha
-		h.permService.LogEmail(&models.EmailLog{
+		// Log failure
+		h.emailService.LogEmail(c.Request.Context(), &models.EmailLog{
 			FromEmail:    h.emailService.GetFromEmail(),
 			ToEmail:      originalLog.ToEmail,
 			Subject:      fmt.Sprintf("[RESEND] %s", originalLog.Subject),
@@ -138,7 +140,7 @@ func (h *EmailManagementHandler) ResendEmail(c *gin.Context) {
 			ErrorMessage: stringPtr(err.Error()),
 			SentBy:       &userIDStr,
 			Metadata: map[string]interface{}{
-				"resend_of": originalLog.ID,
+				"original_id": id,
 			},
 		})
 
@@ -146,8 +148,8 @@ func (h *EmailManagementHandler) ResendEmail(c *gin.Context) {
 		return
 	}
 
-	// Registrar sucesso
-	h.permService.LogEmail(&models.EmailLog{
+	// Log success
+	h.emailService.LogEmail(c.Request.Context(), &models.EmailLog{
 		FromEmail: h.emailService.GetFromEmail(),
 		ToEmail:   originalLog.ToEmail,
 		Subject:   fmt.Sprintf("[RESEND] %s", originalLog.Subject),
@@ -155,23 +157,11 @@ func (h *EmailManagementHandler) ResendEmail(c *gin.Context) {
 		Status:    "sent",
 		SentBy:    &userIDStr,
 		Metadata: map[string]interface{}{
-			"resend_of": originalLog.ID,
+			"original_id": id,
 		},
 	})
 
 	c.JSON(http.StatusOK, gin.H{"message": "Email resent successfully"})
-}
-
-// GetEmailStats retorna estatísticas de emails
-func (h *EmailManagementHandler) GetEmailStats(c *gin.Context) {
-	// Aqui você pode adicionar queries para estatísticas
-	// Por enquanto, vou retornar um placeholder
-	c.JSON(http.StatusOK, gin.H{
-		"total_sent":   0,
-		"total_failed": 0,
-		"today_sent":   0,
-		"today_failed": 0,
-	})
 }
 
 func stringPtr(s string) *string {
