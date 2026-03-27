@@ -60,18 +60,18 @@ func (r *SupportRepository) GetTicketByID(ctx context.Context, id string) (*mode
 	query := `
 		SELECT t.id, t.user_id, t.subject, t.category, t.priority, t.status, t.assigned_to, 
 		       t.subscription_id, t.created_at, t.updated_at, t.resolved_at, t.closed_at,
-		       u.username, u.full_name, u.avatar_url,
-		       s.username, s.full_name, s.avatar_url
+		       COALESCE(u.username, ''), COALESCE(u.full_name, ''), COALESCE(u.avatar_url, ''),
+		       COALESCE(s.username, ''), COALESCE(s.full_name, ''), COALESCE(s.avatar_url, '')
 		FROM support_tickets t
-		JOIN users u ON t.user_id = u.id
+		LEFT JOIN users u ON t.user_id = u.id
 		LEFT JOIN users s ON t.assigned_to = s.id
 		WHERE t.id = $1
 	`
 	var t models.SupportTicket
 	var user, staff models.User
-	var assignedTo, subID *string
-	var resolvedAt, closedAt *sql.NullTime
-	var staffUsername, staffFullName, staffAvatarURL sql.NullString
+	var assignedTo, subID sql.NullString
+	var resolvedAt, closedAt sql.NullTime
+	var staffUsername, staffFullName, staffAvatarURL string
 
 	err := r.db.QueryRowContext(ctx, query, id).Scan(
 		&t.ID, &t.UserID, &t.Subject, &t.Category, &t.Priority, &t.Status, &assignedTo,
@@ -83,23 +83,27 @@ func (r *SupportRepository) GetTicketByID(ctx context.Context, id string) (*mode
 		return nil, err
 	}
 
-	t.AssignedTo = assignedTo
-	t.SubscriptionID = subID
-	if resolvedAt != nil && resolvedAt.Valid {
+	if assignedTo.Valid {
+		t.AssignedTo = &assignedTo.String
+	}
+	if subID.Valid {
+		t.SubscriptionID = &subID.String
+	}
+	if resolvedAt.Valid {
 		t.ResolvedAt = &resolvedAt.Time
 	}
-	if closedAt != nil && closedAt.Valid {
+	if closedAt.Valid {
 		t.ClosedAt = &closedAt.Time
 	}
 
 	user.ID = t.UserID
 	t.User = &user
 
-	if t.AssignedTo != nil && staffUsername.Valid {
+	if t.AssignedTo != nil && staffUsername != "" {
 		staff.ID = *t.AssignedTo
-		staff.Username = staffUsername.String
-		staff.FullName = staffFullName.String
-		staff.AvatarURL = staffAvatarURL.String
+		staff.Username = staffUsername
+		staff.FullName = staffFullName
+		staff.AvatarURL = staffAvatarURL
 		t.AssignedStaff = &staff
 	}
 
@@ -125,9 +129,9 @@ func (r *SupportRepository) GetTicketsByUserID(ctx context.Context, userID strin
 func (r *SupportRepository) GetMessages(ctx context.Context, ticketID string) ([]models.SupportMessage, error) {
 	query := `
 		SELECT sm.id, sm.ticket_id, sm.sender_id, sm.content, sm.is_staff, sm.attachment_url, sm.attachment_type, sm.created_at,
-		       u.username, u.full_name, u.avatar_url
+		       COALESCE(u.username, ''), COALESCE(u.full_name, ''), COALESCE(u.avatar_url, '')
 		FROM support_messages sm
-		JOIN users u ON sm.sender_id = u.id
+		LEFT JOIN users u ON sm.sender_id = u.id
 		WHERE sm.ticket_id = $1
 		ORDER BY sm.created_at ASC
 	`
@@ -141,13 +145,26 @@ func (r *SupportRepository) GetMessages(ctx context.Context, ticketID string) ([
 	for rows.Next() {
 		var m models.SupportMessage
 		var sender models.User
+		var username, fullName, avatarURL string
+		var attachURL, attachType sql.NullString
 		if err := rows.Scan(
-			&m.ID, &m.TicketID, &m.SenderID, &m.Content, &m.IsStaff, &m.AttachmentURL, &m.AttachmentType, &m.CreatedAt,
-			&sender.Username, &sender.FullName, &sender.AvatarURL,
+			&m.ID, &m.TicketID, &m.SenderID, &m.Content, &m.IsStaff, &attachURL, &attachType, &m.CreatedAt,
+			&username, &fullName, &avatarURL,
 		); err != nil {
 			return nil, err
 		}
+
+		if attachURL.Valid {
+			m.AttachmentURL = &attachURL.String
+		}
+		if attachType.Valid {
+			m.AttachmentType = &attachType.String
+		}
+
 		sender.ID = m.SenderID
+		sender.Username = username
+		sender.FullName = fullName
+		sender.AvatarURL = avatarURL
 		m.Sender = &sender
 		messages = append(messages, m)
 	}
@@ -198,7 +215,7 @@ func (r *SupportRepository) GetTicketStats(ctx context.Context) (open, inProgres
 			COUNT(*) FILTER (WHERE t.status = 'IN_PROGRESS'),
 			COUNT(*) FILTER (WHERE t.status = 'RESOLVED' AND t.resolved_at > NOW() - INTERVAL '7 days')
 		FROM support_tickets t
-		JOIN users u ON t.user_id = u.id
+		LEFT JOIN users u ON t.user_id = u.id
 	`
 	err = r.db.QueryRowContext(ctx, query).Scan(&open, &inProgress, &resolved)
 	return
@@ -218,10 +235,10 @@ func (r *SupportRepository) ListTickets(ctx context.Context, filter models.Ticke
 	query := `
 		SELECT t.id, t.user_id, t.subject, t.category, t.priority, t.status, t.assigned_to, 
 		       t.subscription_id, t.created_at, t.updated_at, t.resolved_at, t.closed_at,
-		       u.username, u.full_name, u.avatar_url,
-		       s.username, s.full_name, s.avatar_url
+		       COALESCE(u.username, ''), COALESCE(u.full_name, ''), COALESCE(u.avatar_url, ''),
+		       COALESCE(s.username, ''), COALESCE(s.full_name, ''), COALESCE(s.avatar_url, '')
 		FROM support_tickets t
-		JOIN users u ON t.user_id = u.id
+		LEFT JOIN users u ON t.user_id = u.id
 		LEFT JOIN users s ON t.assigned_to = s.id
 	`
 	
@@ -300,9 +317,9 @@ func (r *SupportRepository) ListTickets(ctx context.Context, filter models.Ticke
 	for rows.Next() {
 		var t models.SupportTicket
 		var user, staff models.User
-		var assignedTo, subID *string
-		var resolvedAt, closedAt *sql.NullTime
-		var staffUsername, staffFullName, staffAvatarURL sql.NullString
+		var assignedTo, subID sql.NullString
+		var resolvedAt, closedAt sql.NullTime
+		var staffUsername, staffFullName, staffAvatarURL string
 		
 		if err := rows.Scan(
 			&t.ID, &t.UserID, &t.Subject, &t.Category, &t.Priority, &t.Status, &assignedTo,
@@ -313,23 +330,27 @@ func (r *SupportRepository) ListTickets(ctx context.Context, filter models.Ticke
 			return nil, err
 		}
 		
-		t.AssignedTo = assignedTo
-		t.SubscriptionID = subID
-		if resolvedAt != nil && resolvedAt.Valid {
+		if assignedTo.Valid {
+			t.AssignedTo = &assignedTo.String
+		}
+		if subID.Valid {
+			t.SubscriptionID = &subID.String
+		}
+		if resolvedAt.Valid {
 			t.ResolvedAt = &resolvedAt.Time
 		}
-		if closedAt != nil && closedAt.Valid {
+		if closedAt.Valid {
 			t.ClosedAt = &closedAt.Time
 		}
 		
 		user.ID = t.UserID
 		t.User = &user
 		
-		if t.AssignedTo != nil && staffUsername.Valid {
+		if t.AssignedTo != nil && staffUsername != "" {
 			staff.ID = *t.AssignedTo
-			staff.Username = staffUsername.String
-			staff.FullName = staffFullName.String
-			staff.AvatarURL = staffAvatarURL.String
+			staff.Username = staffUsername
+			staff.FullName = staffFullName
+			staff.AvatarURL = staffAvatarURL
 			t.AssignedStaff = &staff
 		}
 		

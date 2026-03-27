@@ -202,7 +202,7 @@ func (r *ProductRepository) Delete(ctx context.Context, id uuid.UUID) error {
 // CheckStock verifies if a product has sufficient stock
 func (r *ProductRepository) CheckStock(ctx context.Context, productID uuid.UUID, quantity int) (bool, error) {
 	query := `SELECT stock_quantity FROM products WHERE id = $1 AND is_active = true`
-	
+
 	var stock *int
 	err := r.db.QueryRowContext(ctx, query, productID).Scan(&stock)
 	if err == sql.ErrNoRows {
@@ -211,12 +211,41 @@ func (r *ProductRepository) CheckStock(ctx context.Context, productID uuid.UUID,
 	if err != nil {
 		return false, fmt.Errorf("failed to check stock: %w", err)
 	}
-	
+
 	// NULL stock means unlimited
 	if stock == nil {
 		return true, nil
 	}
-	
+
+	return *stock >= quantity, nil
+}
+
+// CheckStockTx verifies if a product has sufficient stock within a transaction with row-level lock
+func (r *ProductRepository) CheckStockTx(ctx context.Context, tx *sql.Tx, productID uuid.UUID, quantity int) (bool, error) {
+	query := `SELECT stock_quantity FROM products WHERE id = $1 AND is_active = true FOR UPDATE`
+
+	var stock *int
+	var execTx interface {
+		QueryRowContext(context.Context, string, ...interface{}) *sql.Row
+	}
+	if tx != nil {
+		execTx = tx
+	} else {
+		execTx = r.db
+	}
+	err := execTx.QueryRowContext(ctx, query, productID).Scan(&stock)
+	if err == sql.ErrNoRows {
+		return false, fmt.Errorf("product not found or inactive")
+	}
+	if err != nil {
+		return false, fmt.Errorf("failed to check stock (tx): %w", err)
+	}
+
+	// NULL stock means unlimited
+	if stock == nil {
+		return true, nil
+	}
+
 	return *stock >= quantity, nil
 }
 

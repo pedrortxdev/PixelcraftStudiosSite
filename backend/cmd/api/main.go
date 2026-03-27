@@ -82,15 +82,16 @@ func main() {
 	fileService := service.NewFileService(db.DB, "./uploads", 500*1024*1024, allowedTypes) // 500MB max
 	productService := service.NewProductService(db.DB, cfg, fileService)
 	paymentService := service.NewPaymentService(db.DB)
-	checkoutService := service.NewCheckoutService(db.DB, productRepo, discountRepo, paymentRepo, userRepo, subscriptionRepo)
+	// Initialize Mercado Pago Auth Service
+	mpAuthService := service.NewMercadoPagoAuthService(cfg.MercadoPago)
+	depositService := service.NewDepositService(transactionRepo, userRepo, paymentRepo, mpAuthService, cfg.MercadoPago.WebhookURL)
+
+	checkoutService := service.NewCheckoutService(db.DB, productRepo, discountRepo, paymentRepo, userRepo, subscriptionRepo, libraryRepo, depositService)
+	depositService.SetCheckoutService(checkoutService) // Break circular dependency
 	libraryService := service.NewLibraryService(libraryRepo, productService)
 	historyService := service.NewHistoryService(paymentRepo, libraryRepo)
 	subscriptionService := service.NewSubscriptionService(subscriptionRepo)
 	discountService := service.NewDiscountService(discountRepo)
-	
-	// Initialize Mercado Pago Auth Service
-	mpAuthService := service.NewMercadoPagoAuthService(cfg.MercadoPago)
-	depositService := service.NewDepositService(transactionRepo, userRepo, mpAuthService, cfg.MercadoPago.WebhookURL)
 
 	// Admin Service (Updated with dependencies for finance and users)
 	adminService := service.NewAdminService(adminRepo, transactionRepo, userRepo, depositService, subscriptionRepo, libraryRepo, roleRepo)

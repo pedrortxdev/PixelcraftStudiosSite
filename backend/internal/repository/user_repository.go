@@ -182,13 +182,34 @@ func (r *UserRepository) UpdateUser(ctx context.Context, userID string, req *mod
 // GetBalance retrieves the balance for a user
 func (r *UserRepository) GetBalance(ctx context.Context, userID string) (float64, error) {
 	query := `SELECT balance FROM users WHERE id = $1`
-	
+
 	var balance float64
 	err := r.db.QueryRowContext(ctx, query, userID).Scan(&balance)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get user balance: %w", err)
 	}
-	
+
+	return balance, nil
+}
+
+// GetBalanceTx retrieves the balance for a user within a transaction with row-level lock
+func (r *UserRepository) GetBalanceTx(ctx context.Context, tx *sql.Tx, userID string) (float64, error) {
+	query := `SELECT balance FROM users WHERE id = $1 FOR UPDATE`
+
+	var balance float64
+	var execTx interface {
+		QueryRowContext(context.Context, string, ...interface{}) *sql.Row
+	}
+	if tx != nil {
+		execTx = tx
+	} else {
+		execTx = r.db
+	}
+	err := execTx.QueryRowContext(ctx, query, userID).Scan(&balance)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get user balance (tx): %w", err)
+	}
+
 	return balance, nil
 }
 
@@ -240,7 +261,7 @@ func (r *UserRepository) IncrementBalance(ctx context.Context, tx *sql.Tx, userI
 // GetUserByReferralCode retrieves a user by their referral code
 func (r *UserRepository) GetUserByReferralCode(ctx context.Context, referralCode string) (*string, error) {
 	query := `SELECT id FROM users WHERE referral_code = $1`
-	
+
 	var userID string
 	err := r.db.QueryRowContext(ctx, query, referralCode).Scan(&userID)
 	if err != nil {
@@ -249,8 +270,143 @@ func (r *UserRepository) GetUserByReferralCode(ctx context.Context, referralCode
 		}
 		return nil, fmt.Errorf("failed to get user by referral code: %w", err)
 	}
-	
+
 	return &userID, nil
+}
+
+// EmailExists checks if an email already exists in the database
+func (r *UserRepository) EmailExists(ctx context.Context, email string) (bool, error) {
+	query := `SELECT EXISTS(SELECT 1 FROM users WHERE email = $1)`
+
+	var exists bool
+	err := r.db.QueryRowContext(ctx, query, email).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("failed to check email existence: %w", err)
+	}
+
+	return exists, nil
+}
+
+// CreateUser creates a new user in the database
+func (r *UserRepository) CreateUser(ctx context.Context, user *models.User, passwordHash string, referredByCode *string) error {
+	query := `
+		INSERT INTO users (id, email, username, password_hash, full_name, referral_code, referred_by_code, balance, discord_handle, whatsapp_phone)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		RETURNING id, email, full_name, referral_code, balance, is_admin, created_at, updated_at
+	`
+
+	var createdAt, updatedAt time.Time
+	err := r.db.QueryRowContext(ctx, query,
+		user.ID, user.Email, user.Username, passwordHash, user.FullName,
+		user.ReferralCode, referredByCode, user.Balance, user.DiscordHandle, user.WhatsAppPhone,
+	).Scan(
+		&user.ID, &user.Email, &user.FullName, &user.ReferralCode, &user.Balance,
+		&user.IsAdmin, &createdAt, &updatedAt,
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to create user: %w", err)
+	}
+
+	user.CreatedAt = createdAt
+	user.UpdatedAt = updatedAt
+	return nil
+}
+
+// GetUserByEmail retrieves a user by their email address including password hash
+func (r *UserRepository) GetUserByEmail(ctx context.Context, email string) (*models.UserWithPassword, error) {
+	query := `
+		SELECT id, email, password_hash, full_name, referral_code, balance, is_admin, created_at, updated_at, username, discord_handle, whatsapp_phone, avatar_url
+		FROM users
+		WHERE email = $1
+	`
+
+	var user models.UserWithPassword
+	var fullName, referralCode, username, discordHandle, whatsappPhone, avatarUrl sql.NullString
+	var balance float64
+	var isAdmin bool
+	var createdAt, updatedAt time.Time
+	var hashedPassword []byte
+
+	err := r.db.QueryRowContext(ctx, query, email).Scan(
+		&user.ID, &user.Email, &hashedPassword, &fullName, &referralCode, &balance, &isAdmin, &createdAt, &updatedAt,
+		&username, &discordHandle, &whatsappPhone, &avatarUrl,
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user by email: %w", err)
+	}
+
+	user.PasswordHash = hashedPassword
+	user.FullName = fullName.String
+	user.ReferralCode = referralCode.String
+	user.Balance = balance
+	user.IsAdmin = isAdmin
+	user.CreatedAt = createdAt
+	user.UpdatedAt = updatedAt
+	user.Username = username.String
+	user.DiscordHandle = discordHandle.String
+	user.WhatsAppPhone = whatsappPhone.String
+	user.AvatarURL = avatarUrl.String
+
+	return &user, nil
+}
+
+// UpdatePassword updates the user's password hash
+func (r *UserRepository) UpdatePassword(ctx context.Context, userID, passwordHash string) error {
+	query := `UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2`
+	_, err := r.db.ExecContext(ctx, query, passwordHash, userID)
+	return err
+}
+
+// CreatePasswordResetToken creates a password reset token for a user
+func (r *UserRepository) CreatePasswordResetToken(ctx context.Context, userID, tokenURL, code string, expiresAt time.Time) error {
+	// First invalidate any existing tokens
+	_, err := r.db.ExecContext(ctx, "UPDATE password_resets SET used = true WHERE user_id = $1 AND used = false", userID)
+	if err != nil {
+		return fmt.Errorf("failed to invalidate existing tokens: %w", err)
+	}
+
+	query := `
+		INSERT INTO password_resets (user_id, token_url, verification_code, expires_at)
+		VALUES ($1, $2, $3, $4)
+	`
+	_, err = r.db.ExecContext(ctx, query, userID, tokenURL, code, expiresAt)
+	if err != nil {
+		return fmt.Errorf("failed to create password reset token: %w", err)
+	}
+
+	return nil
+}
+
+// GetPasswordResetToken retrieves a password reset token by token URL
+func (r *UserRepository) GetPasswordResetToken(ctx context.Context, tokenURL string) (*models.PasswordResetToken, error) {
+	query := `
+		SELECT id, user_id, verification_code, expires_at
+		FROM password_resets
+		WHERE token_url = $1 AND used = false
+	`
+
+	var token models.PasswordResetToken
+	err := r.db.QueryRowContext(ctx, query, tokenURL).Scan(&token.ID, &token.UserID, &token.VerificationCode, &token.ExpiresAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get password reset token: %w", err)
+	}
+
+	return &token, nil
+}
+
+// MarkPasswordResetTokenUsed marks a password reset token as used
+func (r *UserRepository) MarkPasswordResetTokenUsed(ctx context.Context, tokenID string) error {
+	query := `UPDATE password_resets SET used = true WHERE id = $1`
+	_, err := r.db.ExecContext(ctx, query, tokenID)
+	return err
 }
 
 // ListAll retrieves a list of users with pagination and search
@@ -350,13 +506,6 @@ func (r *UserRepository) ListAll(ctx context.Context, page, limit int, search st
 	}
 
 	return users, total, nil
-}
-
-// UpdatePassword updates the user's password hash
-func (r *UserRepository) UpdatePassword(ctx context.Context, userID, passwordHash string) error {
-	query := `UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2`
-	_, err := r.db.ExecContext(ctx, query, passwordHash, userID)
-	return err
 }
 
 // UpdateUserAdmin updates a user's profile information including email (Admin only)

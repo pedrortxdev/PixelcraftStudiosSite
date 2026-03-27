@@ -1,10 +1,8 @@
-# Plano de Execução (Tickets e Avatar)
+# Plano de Recuperação
 
-## Fase 1: Correção dos Tickets
-1. **Repository:** Atualizar `GetTicketStats` em `support_repository.go` para ser mais abrangente ou consistente com a listagem.
-2. **Frontend:** Verificar os filtros aplicados por padrão em `AdminSupport.jsx` ao carregar a página.
+## Fase 1: Estabilização do Suporte (Urgente)
+1. **Repository:** Corrigir as queries de `ListTickets` e `GetTicketByID` em `support_repository.go` para lidar com valores `NULL` usando `COALESCE`. Isso deve eliminar o erro 500 e fazer os tickets aparecerem.
 
-## Fase 2: Correção do Erro SQL no Avatar
-1. **Logs:** Adicionar logs detalhados no backend para capturar a query exata que está falhando.
-2. **Repository:** Corrigir a montagem da query dinâmina em `user_repository.go` se necessário.
-3. **Database:** Validar a estrutura da tabela `users` no ambiente de produção/teste.
+## Fase 2: Investigação de Vendas
+1. **Logs:** Verificar logs de transações falhas no backend.
+2. **Checkout:** Testar o fluxo de criação de assinatura e validar se os planos estão sendo carregados corretamente para o checkout.

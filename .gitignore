@@ -32,11 +32,11 @@ node_modules
 bin
 mailserver
 hydra
-docsv2
-docsv3
-docsv4
-docsv5
-docsv6
+docsv2*
+docsv3*
+docsv4*
+docsv5*
+docsv6*
 
 .gemini/
 gha-creds-*.json

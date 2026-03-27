@@ -25,7 +25,7 @@ func NewDiscountRepository(db *sql.DB) *DiscountRepository {
 // GetByCode retrieves a discount by its code
 func (r *DiscountRepository) GetByCode(ctx context.Context, code string) (*models.Discount, error) {
 	query := `
-		SELECT id, code, type, value, is_referral, created_by_user_id, 
+		SELECT id, code, type, value, is_referral, created_by_user_id,
 		       expires_at, max_uses, current_uses, is_active, created_at,
 		       restriction_type, target_ids
 		FROM discounts
@@ -34,22 +34,62 @@ func (r *DiscountRepository) GetByCode(ctx context.Context, code string) (*model
 
 	var d models.Discount
 	var createdByUserID *uuid.UUID
-	
+
 	err := r.db.QueryRowContext(ctx, query, code).Scan(
 		&d.ID, &d.Code, &d.Type, &d.Value, &d.IsReferral, &createdByUserID,
 		&d.ExpiresAt, &d.MaxUses, &d.CurrentUses, &d.IsActive, &d.CreatedAt,
 		&d.RestrictionType, pq.Array(&d.TargetIDs),
 	)
-	
+
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get discount: %w", err)
 	}
-	
+
 	d.CreatedByUserID = createdByUserID
-	
+
+	return &d, nil
+}
+
+// GetByCodeTx retrieves a discount by its code within a transaction with row-level lock
+func (r *DiscountRepository) GetByCodeTx(ctx context.Context, tx *sql.Tx, code string) (*models.Discount, error) {
+	query := `
+		SELECT id, code, type, value, is_referral, created_by_user_id,
+		       expires_at, max_uses, current_uses, is_active, created_at,
+		       restriction_type, target_ids
+		FROM discounts
+		WHERE code = $1 FOR UPDATE
+	`
+
+	var d models.Discount
+	var createdByUserID *uuid.UUID
+
+	var execTx interface {
+		QueryRowContext(context.Context, string, ...interface{}) *sql.Row
+	}
+	if tx != nil {
+		execTx = tx
+	} else {
+		execTx = r.db
+	}
+
+	err := execTx.QueryRowContext(ctx, query, code).Scan(
+		&d.ID, &d.Code, &d.Type, &d.Value, &d.IsReferral, &createdByUserID,
+		&d.ExpiresAt, &d.MaxUses, &d.CurrentUses, &d.IsActive, &d.CreatedAt,
+		&d.RestrictionType, pq.Array(&d.TargetIDs),
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get discount (tx): %w", err)
+	}
+
+	d.CreatedByUserID = createdByUserID
+
 	return &d, nil
 }
 

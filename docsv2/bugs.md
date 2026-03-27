@@ -1,18 +1,18 @@
-# Bugs Identificados (Novos)
+# Bugs Identificados (Críticos)
 
-## 1. Discrepância na Contagem de Tickets
-- **Sintoma:** O sistema indica 5 tickets abertos, mas nenhum é visível na lista.
+## 1. Falha no Carregamento de Tickets (Erro 500)
+- **Sintoma:** O admin vê "5 tickets abertos", mas a lista está vazia e o console mostra erro 500 ao acessar `/api/v1/admin/support/tickets`.
 - **Análise Técnica:** 
-    - O frontend em `AdminSupport.jsx` usa o endpoint `/api/v1/admin/support/stats` para obter a contagem.
-    - No repositório Go (`support_repository.go`), a função `GetTicketStats` conta apenas tickets com status exatamente igual a `'OPEN'`.
-    - No entanto, o sistema de tickets possui outros status ativos como `'WAITING_RESPONSE'` e `'IN_PROGRESS'`.
-    - Se a lista de tickets estiver filtrada por padrão para mostrar apenas "Abertos" (OPEN), mas a contagem do dashboard somar outros status ou se houver um erro de sincronização entre a contagem e a query de listagem (que usa JOIN com users), tickets de usuários deletados ou com dados incompletos podem ser contados mas não listados.
-- **Solução:** Normalizar as queries de contagem e listagem. Ajustar a contagem para refletir o que o admin realmente vê ou corrigir o filtro padrão.
+    - A query de listagem faz `JOIN users u ON t.user_id = u.id` e tenta ler `u.full_name` e `u.avatar_url`.
+    - No banco de dados, `full_name` e `avatar_url` podem ser `NULL`.
+    - O código Go está tentando dar um `Scan` desses valores diretamente em campos do tipo `string`. O Go não permite converter `NULL` do SQL para `string` diretamente, resultando em erro.
+- **Solução:** Usar `COALESCE(u.full_name, '')` na query SQL ou utilizar `sql.NullString` no código Go para capturar os valores.
 
-## 2. Erro SQL na Foto de Perfil (Avatar)
-- **Sintoma:** Erro SQL ao tentar atualizar a foto de perfil.
+## 2. Falha na Compra de Assinatura
+- **Sintoma:** Cliente tentou assinar um serviço ontem e não conseguiu concluir a operação.
 - **Análise Técnica:** 
-    - O repositório `user_repository.go` monta a query de UPDATE dinamicamente.
-    - Se a coluna `avatar_url` não estiver presente em todas as tabelas relacionadas ou se houver um erro de sintaxe na cláusula SET quando apenas o avatar é enviado.
-    - Verificado que a migração `002_add_avatar_url.sql` adiciona a coluna, mas o erro pode ser um mismatch entre o `db:"avatar_url"` no modelo e o nome real na tabela se houver ambiguidades em JOINs.
-- **Solução:** Revisar a query SQL gerada em `UpdateUser` e validar se o campo `avatar_url` está sendo mapeado corretamente.
+    - O sistema de checkout (`Checkout.jsx` e `CheckoutService.go`) está configurado para aceitar apenas pagamentos via **Saldo da Carteira** (`use_balance: true`).
+    - Se o cliente tentar finalizar a compra sem ter depositado saldo previamente via PIX/Link na aba "Carteira", o backend retorna erro de saldo insuficiente.
+    - Atualmente, não existe a opção de "Pagar Agora" via PIX diretamente no checkout; o fluxo obriga o usuário a fazer dois passos (Depositar -> Comprar). Isso confunde o cliente e causa falhas na conversão.
+- **Solução:** Implementar a opção de pagamento direto via Mercado Pago (PIX/Link) no Checkout, integrando o `DepositService` ao fluxo de finalização de compra.
+

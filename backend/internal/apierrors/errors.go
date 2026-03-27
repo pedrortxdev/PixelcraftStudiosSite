@@ -13,6 +13,49 @@ var (
 	ErrPaymentFailed = errors.New("falha no processamento da transação")
 )
 
+// Checkout/Payment Errors
+var (
+	ErrInsufficientBalance = errors.New("saldo insuficiente")
+	ErrInsufficientStock   = errors.New("estoque insuficiente")
+	ErrInvalidDiscount     = errors.New("cupom inválido")
+	ErrDiscountExpired     = errors.New("cupom expirado")
+	ErrDiscountExhausted   = errors.New("cupom esgotado")
+	ErrDiscountInactive    = errors.New("cupom não está ativo")
+)
+
+// Product Errors
+var (
+	ErrProductNotFound = errors.New("produto não encontrado")
+	ErrProductInactive = errors.New("produto inativo")
+)
+
+// Subscription Errors
+var (
+	ErrSubscriptionNotFound = errors.New("assinatura não encontrada")
+	ErrSubscriptionInvalid  = errors.New("assinatura inválida")
+)
+
+// Support Errors
+var (
+	ErrTicketNotFound     = errors.New("ticket não encontrado")
+	ErrTicketUnauthorized = errors.New("não autorizado para este ticket")
+)
+
+// File Errors
+var (
+	ErrFileNotFound    = errors.New("arquivo não encontrado")
+	ErrFileUnauthorized = errors.New("não autorizado para este arquivo")
+)
+
+// User Errors
+var (
+	ErrUserNotFound       = errors.New("usuário não encontrado")
+	ErrEmailAlreadyExists = errors.New("email já cadastrado")
+	ErrInvalidToken       = errors.New("token inválido ou já utilizado")
+	ErrTokenExpired       = errors.New("token expirado")
+	ErrInvalidVerification = errors.New("código de verificação incorreto")
+)
+
 // APIError details the standard JSON response format (BT-029)
 type APIError struct {
 	Error   string `json:"error"`
@@ -39,6 +82,75 @@ func Convert(err error) APIError {
 	}
 	if errors.Is(err, ErrPaymentFailed) {
 		return APIError{Error: err.Error(), Code: "ERR_PAYMENT_FAILED"}
+	}
+
+	// Checkout/Payment Errors
+	if errors.Is(err, ErrInsufficientBalance) {
+		return APIError{Error: err.Error(), Code: "ERR_INSUFFICIENT_BALANCE"}
+	}
+	if errors.Is(err, ErrInsufficientStock) {
+		return APIError{Error: err.Error(), Code: "ERR_INSUFFICIENT_STOCK"}
+	}
+	if errors.Is(err, ErrInvalidDiscount) {
+		return APIError{Error: err.Error(), Code: "ERR_INVALID_DISCOUNT"}
+	}
+	if errors.Is(err, ErrDiscountExpired) {
+		return APIError{Error: err.Error(), Code: "ERR_DISCOUNT_EXPIRED"}
+	}
+	if errors.Is(err, ErrDiscountExhausted) {
+		return APIError{Error: err.Error(), Code: "ERR_DISCOUNT_EXHAUSTED"}
+	}
+	if errors.Is(err, ErrDiscountInactive) {
+		return APIError{Error: err.Error(), Code: "ERR_DISCOUNT_INACTIVE"}
+	}
+
+	// Product Errors
+	if errors.Is(err, ErrProductNotFound) {
+		return APIError{Error: err.Error(), Code: "ERR_PRODUCT_NOT_FOUND"}
+	}
+	if errors.Is(err, ErrProductInactive) {
+		return APIError{Error: err.Error(), Code: "ERR_PRODUCT_INACTIVE"}
+	}
+
+	// Subscription Errors
+	if errors.Is(err, ErrSubscriptionNotFound) {
+		return APIError{Error: err.Error(), Code: "ERR_SUBSCRIPTION_NOT_FOUND"}
+	}
+	if errors.Is(err, ErrSubscriptionInvalid) {
+		return APIError{Error: err.Error(), Code: "ERR_SUBSCRIPTION_INVALID"}
+	}
+
+	// Support Errors
+	if errors.Is(err, ErrTicketNotFound) {
+		return APIError{Error: err.Error(), Code: "ERR_TICKET_NOT_FOUND"}
+	}
+	if errors.Is(err, ErrTicketUnauthorized) {
+		return APIError{Error: err.Error(), Code: "ERR_TICKET_UNAUTHORIZED"}
+	}
+
+	// File Errors
+	if errors.Is(err, ErrFileNotFound) {
+		return APIError{Error: err.Error(), Code: "ERR_FILE_NOT_FOUND"}
+	}
+	if errors.Is(err, ErrFileUnauthorized) {
+		return APIError{Error: err.Error(), Code: "ERR_FILE_UNAUTHORIZED"}
+	}
+
+	// User Errors
+	if errors.Is(err, ErrUserNotFound) {
+		return APIError{Error: err.Error(), Code: "ERR_USER_NOT_FOUND"}
+	}
+	if errors.Is(err, ErrEmailAlreadyExists) {
+		return APIError{Error: err.Error(), Code: "ERR_EMAIL_ALREADY_EXISTS"}
+	}
+	if errors.Is(err, ErrInvalidToken) {
+		return APIError{Error: err.Error(), Code: "ERR_INVALID_TOKEN"}
+	}
+	if errors.Is(err, ErrTokenExpired) {
+		return APIError{Error: err.Error(), Code: "ERR_TOKEN_EXPIRED"}
+	}
+	if errors.Is(err, ErrInvalidVerification) {
+		return APIError{Error: err.Error(), Code: "ERR_INVALID_VERIFICATION"}
 	}
 
 	// Strict Fallback masking detailed Go/SQL panics in production logic (BT-030)

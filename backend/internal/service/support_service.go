@@ -124,12 +124,14 @@ func (s *SupportService) SendMessage(ctx context.Context, ticketID, senderID, co
 		return nil, errors.New("unauthorized: you do not own this ticket")
 	}
 
-	// Staff Claim Logic enforcement
+	// Staff Claim Logic enforcement (Improved)
 	if isStaff {
 		if ticket.AssignedTo == nil {
-			return nil, errors.New("access denied: you must claim this ticket before replying")
-		}
-		if *ticket.AssignedTo != senderID {
+			// Auto-claim if unassigned
+			if err := s.AssignTicket(ctx, ticketID, senderID); err != nil {
+				log.Printf("Auto-claim failed for ticket %s: %v", ticketID, err)
+			}
+		} else if *ticket.AssignedTo != senderID {
 			return nil, errors.New("access denied: this ticket is assigned to another staff member")
 		}
 	}

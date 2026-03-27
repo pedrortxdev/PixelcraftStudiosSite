@@ -47,6 +47,12 @@ type LoginRequest struct {
 	Password string `json:"password" binding:"required"`
 }
 
+// UserWithPassword extends User with password hash for authentication
+type UserWithPassword struct {
+	User
+	PasswordHash []byte `json:"-"`
+}
+
 // LoginResponse represents the response after successful login
 type LoginResponse struct {
 	Token string `json:"token"`

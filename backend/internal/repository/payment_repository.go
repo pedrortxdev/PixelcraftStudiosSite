@@ -21,6 +21,112 @@ func NewPaymentRepository(db *sql.DB) *PaymentRepository {
 	return &PaymentRepository{db: db}
 }
 
+// Create creates a new payment record within a transaction
+func (r *PaymentRepository) Create(ctx context.Context, tx *sql.Tx, payment *models.Payment) (uuid.UUID, error) {
+	query := `
+		INSERT INTO payments (id, user_id, description, amount, discount_applied, final_amount, status, is_test, payment_method, payment_metadata, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		RETURNING id
+	`
+
+	var execTx interface {
+		QueryRowContext(context.Context, string, ...interface{}) *sql.Row
+	}
+	if tx != nil {
+		execTx = tx
+	} else {
+		execTx = r.db
+	}
+
+	var paymentID uuid.UUID
+	err := execTx.QueryRowContext(ctx, query,
+		payment.ID,
+		payment.UserID,
+		payment.Description,
+		payment.Amount,
+		payment.DiscountApplied,
+		payment.FinalAmount,
+		payment.Status,
+		payment.IsTest,
+		payment.PaymentMethod,
+		payment.PaymentMetadata,
+		payment.CreatedAt,
+	).Scan(&paymentID)
+
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("failed to create payment: %w", err)
+	}
+
+	return paymentID, nil
+}
+
+// GetByID retrieves a payment by its ID
+func (r *PaymentRepository) GetByID(ctx context.Context, id string) (*models.Payment, error) {
+	paymentID, err := uuid.Parse(id)
+	if err != nil {
+		return nil, fmt.Errorf("invalid payment ID: %w", err)
+	}
+
+	query := `
+		SELECT 
+			id, user_id, subscription_id, description, amount, discount_applied, 
+			final_amount, status, is_test, payment_gateway_id, payment_method, 
+			payment_metadata, created_at, completed_at, failed_at
+		FROM payments
+		WHERE id = $1
+	`
+
+	var p models.Payment
+	var metadata sql.NullString
+	err = r.db.QueryRowContext(ctx, query, paymentID).Scan(
+		&p.ID, &p.UserID, &p.SubscriptionID, &p.Description, &p.Amount, &p.DiscountApplied,
+		&p.FinalAmount, &p.Status, &p.IsTest, &p.PaymentGatewayID, &p.PaymentMethod,
+		&metadata, &p.CreatedAt, &p.CompletedAt, &p.FailedAt,
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get payment: %w", err)
+	}
+
+	if metadata.Valid {
+		p.PaymentMetadata = &metadata.String
+	}
+
+	return &p, nil
+}
+
+// UpdateStatus updates the status of a payment
+func (r *PaymentRepository) UpdateStatus(ctx context.Context, tx *sql.Tx, id string, status models.PaymentStatus, gatewayID *string) error {
+	paymentID, err := uuid.Parse(id)
+	if err != nil {
+		return fmt.Errorf("invalid payment ID: %w", err)
+	}
+
+	query := `
+		UPDATE payments 
+		SET status = $1, 
+		    payment_gateway_id = COALESCE($2, payment_gateway_id),
+		    completed_at = CASE WHEN $1 = 'COMPLETED' THEN NOW() ELSE completed_at END,
+		    failed_at = CASE WHEN $1 = 'FAILED' THEN NOW() ELSE failed_at END
+		WHERE id = $3
+	`
+
+	var execTx interface {
+		ExecContext(context.Context, string, ...interface{}) (sql.Result, error)
+	}
+	if tx != nil {
+		execTx = tx
+	} else {
+		execTx = r.db
+	}
+
+	_, err = execTx.ExecContext(ctx, query, status, gatewayID, paymentID)
+	return err
+}
+
 // GetUserPaymentStats gets payment statistics for a user
 func (r *PaymentRepository) GetUserPaymentStats(ctx context.Context, userIDStr string) (*models.PaymentStats, error) {
 	userID, err := uuid.Parse(userIDStr)

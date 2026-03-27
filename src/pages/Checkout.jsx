@@ -8,7 +8,9 @@ import {
   Check,
   X,
   Loader2,
-  Trash2
+  Trash2,
+  Wallet,
+  QrCode
 } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -19,7 +21,7 @@ import DashboardLayout from '../components/DashboardLayout';
 
 function Checkout() {
   const navigate = useNavigate();
-  const { user } = useAuth(); // Changed to not force redirect if useAuth allows it, but assuming it protects by default, let's just grab the user. Wait, if useAuth has a redirect inside, we need to handle it. Assuming it returns { user }.
+  const { user } = useAuth();
   const { cart, cartTotal, clearCart, removeFromCart } = useCart();
   const [couponCode, setCouponCode] = useState('');
   const [referralCode, setReferralCode] = useState('');
@@ -29,6 +31,7 @@ function Checkout() {
   const [validating, setValidating] = useState(false);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(false);
+  const [paymentMethod, setPaymentMethod] = useState('balance'); // 'balance' or 'direct'
 
   // Redirect to shop if cart is empty
   useEffect(() => {
@@ -91,7 +94,7 @@ function Checkout() {
           product_id: item.id,
           quantity: item.quantity
         })),
-        use_balance: true,
+        use_balance: paymentMethod === 'balance',
         ...(referralCode.trim() && { referral_code: referralCode.trim() })
       };
 
@@ -102,6 +105,11 @@ function Checkout() {
       const response = await checkoutAPI.process(checkoutData);
 
       if (response.success) {
+        if (response.payment_gateway_url) {
+          // Redirect to Mercado Pago
+          window.location.href = response.payment_gateway_url;
+          return;
+        }
         setSuccess(true);
         clearCart();
       } else {
@@ -109,55 +117,51 @@ function Checkout() {
       }
     } catch (error) {
       if (error.response?.status === 401) {
-        // If unauthorized from API, redirect to login with returnUrl
         navigate('/login', { state: { returnUrl: '/checkout' } });
       } else {
-        setError(error.message || 'Erro inesperado. Tente novamente.');
+        setError(error.response?.data?.error || error.message || 'Erro inesperado. Tente novamente.');
       }
     } finally {
       setLoading(false);
     }
   };
 
-  // If user is not logged in, we intercept the UI to show a login prompt 
-  // without losing the cart context (as it's stored in local storage)
   if (!user) {
     return (
       <DashboardLayout hideSidebar={true}>
-        <div style={styles.checkoutContainer}>
-          <div style={styles.checkoutWrapper}>
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              style={{
-                background: 'var(--bg-card)',
-                padding: '3rem',
-                borderRadius: '1rem',
-                textAlign: 'center',
-                border: '1px solid var(--border-card)',
-                boxShadow: 'var(--shadow-card)'
-              }}
-            >
-              <h2 style={{ fontSize: 'var(--title-h2)', marginBottom: '1rem', fontFamily: 'var(--font-display)', color: 'var(--text-primary)' }}>FAÇA LOGIN PARA CONTINUAR</h2>
-              <p style={{ color: 'var(--text-secondary)', marginBottom: '2rem' }}>
-                Você possui <strong>{cart.length} itens</strong> no carrinho aguardando finalização.
-              </p>
-              <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center' }}>
-                <button
-                  onClick={() => navigate('/login', { state: { returnUrl: '/checkout' } })}
-                  style={{ ...styles.actionButton, background: 'var(--gradient-primary)', border: 'none' }}
-                >
-                  Fazer Login
-                </button>
-                <button
-                  onClick={() => navigate('/cadastrar', { state: { returnUrl: '/checkout' } })}
-                  style={{ ...styles.actionButton, background: 'transparent', border: '1px solid rgba(255,255,255,0.2)' }}
-                >
-                  Criar Conta
-                </button>
-              </div>
-            </motion.div>
-          </div>
+        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '60vh' }}>
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            style={{
+              background: 'var(--bg-card)',
+              padding: '3rem',
+              borderRadius: '1rem',
+              textAlign: 'center',
+              border: '1px solid var(--border-card)',
+              boxShadow: 'var(--shadow-card)',
+              maxWidth: '500px'
+            }}
+          >
+            <h2 style={{ fontSize: 'var(--title-h2)', marginBottom: '1rem', color: 'var(--text-primary)' }}>FAÇA LOGIN PARA CONTINUAR</h2>
+            <p style={{ color: 'var(--text-secondary)', marginBottom: '2rem' }}>
+              Você possui <strong>{cart.length} itens</strong> no carrinho aguardando finalização.
+            </p>
+            <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center' }}>
+              <button
+                onClick={() => navigate('/login', { state: { returnUrl: '/checkout' } })}
+                style={{ padding: '12px 24px', borderRadius: '8px', background: 'var(--gradient-primary)', border: 'none', color: 'white', fontWeight: 700, cursor: 'pointer' }}
+              >
+                Fazer Login
+              </button>
+              <button
+                onClick={() => navigate('/cadastrar', { state: { returnUrl: '/checkout' } })}
+                style={{ padding: '12px 24px', borderRadius: '8px', background: 'transparent', border: '1px solid rgba(255,255,255,0.2)', color: 'white', fontWeight: 700, cursor: 'pointer' }}
+              >
+                Criar Conta
+              </button>
+            </div>
+          </motion.div>
         </div>
       </DashboardLayout>
     );
@@ -176,7 +180,7 @@ function Checkout() {
       backdropFilter: 'blur(10px)',
       border: '1px solid var(--border-input)',
       display: 'flex', alignItems: 'center', justifyContent: 'center',
-      color: 'var(--text-primary)', cursor: 'pointer', transition: 'all var(--transition-normal)',
+      color: 'var(--text-primary)', cursor: 'pointer', transition: 'all 0.3s ease',
       boxShadow: 'var(--shadow-card)',
       marginRight: '1rem',
     },
@@ -188,10 +192,9 @@ function Checkout() {
     },
     mainGrid: {
       display: 'grid',
-      gridTemplateColumns: 'minmax(0, 1fr) 1fr', // Ensure flex items don't overflow
+      gridTemplateColumns: '1fr 400px',
       gap: '3rem',
     },
-    leftColumn: {},
     rightColumn: {
       background: 'rgba(15, 18, 25, 0.6)',
       backdropFilter: 'blur(20px)',
@@ -206,150 +209,28 @@ function Checkout() {
       fontWeight: 700,
       color: '#F8F9FA',
       marginBottom: '1.5rem',
-
       display: 'flex',
       alignItems: 'center',
       gap: '0.75rem',
     },
-    cartItem: {
-      display: 'flex',
-      justifyContent: 'space-between',
-      alignItems: 'center',
-      padding: '1rem 0',
-      borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
-    },
-    itemInfo: {
-      display: 'flex',
-      alignItems: 'center',
-      gap: '1rem',
-    },
-    itemImage: {
-      width: '80px',
-      height: '80px',
-      background: 'rgba(224, 26, 79, 0.1)',
-      borderRadius: '12px',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      fontSize: '24px',
-      overflow: 'hidden',
-      flexShrink: 0,
-    },
-    itemDetails: {
+    methodCard: {
+      flex: 1,
+      padding: '1.5rem',
+      borderRadius: '16px',
+      border: '1px solid rgba(255, 255, 255, 0.1)',
+      background: 'rgba(255, 255, 255, 0.03)',
+      cursor: 'pointer',
+      transition: 'all 0.3s ease',
       display: 'flex',
       flexDirection: 'column',
-      gap: '0.25rem',
-    },
-    itemName: {
-      fontSize: '1.1rem',
-      fontWeight: 600,
-      color: '#F8F9FA',
-
-    },
-    itemCategory: {
-      fontSize: '0.875rem',
-      color: '#E01A4F',
-
-    },
-    itemPrice: {
-      fontSize: '1.1rem',
-      fontWeight: 600,
-      color: '#F8F9FA',
-
-    },
-    quantity: {
-      fontSize: '0.875rem',
-      color: '#B8BDC7',
-
-    },
-    formSection: {
-      marginBottom: '2rem',
-    },
-    inputGroup: {
-      display: 'flex',
-      gap: '0.75rem',
-      marginBottom: '1rem',
-    },
-    input: {
-      flex: 1,
-      padding: '1rem 1.25rem',
-      background: 'rgba(255, 255, 255, 0.02)',
-      border: '1px solid rgba(255, 255, 255, 0.12)',
-      borderRadius: '12px',
-      color: '#F8F9FA',
-      fontSize: '14px',
-
-      outline: 'none',
-      transition: 'all 0.3s',
-    },
-    applyButton: {
-      padding: '1rem 1.5rem',
-      background: 'transparent',
-      border: '1px solid rgba(224, 26, 79, 0.5)',
-      borderRadius: '12px',
-      color: '#E01A4F',
-      fontSize: '14px',
-      fontWeight: 600,
-      cursor: 'pointer',
-      transition: 'all 0.3s',
-
-      disabled: {
-        opacity: 0.5,
-        cursor: 'not-allowed',
-      },
-    },
-    discountApplied: {
-      background: 'rgba(34, 197, 94, 0.1)',
-      border: '1px solid rgba(34, 197, 94, 0.3)',
-      borderRadius: '12px',
-      padding: 'var(--btn-padding-md)',
-      color: '#22C55E',
-      fontSize: '14px',
-      fontWeight: 600,
-      display: 'flex',
-      alignItems: 'center',
       gap: '0.5rem',
-
-      marginBottom: '1rem',
+      position: 'relative',
+      overflow: 'hidden'
     },
-    priceBreakdown: {
-      background: 'rgba(15, 18, 25, 0.4)',
-      border: '1px solid rgba(255, 255, 255, 0.08)',
-      borderRadius: '16px',
-      padding: '1.5rem',
-      marginBottom: '2rem',
-    },
-    priceRow: {
-      display: 'flex',
-      justifyContent: 'space-between',
-      alignItems: 'center',
-      marginBottom: '0.75rem',
-      fontSize: '14px',
-
-    },
-    priceLabel: {
-      color: '#B8BDC7',
-    },
-    priceValue: {
-      color: '#F8F9FA',
-      fontWeight: 600,
-    },
-    discountValue: {
-      color: '#22C55E',
-      fontWeight: 600,
-    },
-    finalPriceRow: {
-      borderTop: '1px solid rgba(255, 255, 255, 0.12)',
-      paddingTop: '1rem',
-      marginTop: '1rem',
-      marginBottom: 0,
-    },
-    finalPrice: {
-      fontSize: '1.25rem',
-      fontWeight: 700,
-      background: 'var(--gradient-cta)',
-      WebkitBackgroundClip: 'text',
-      WebkitTextFillColor: 'transparent',
+    methodCardActive: {
+      borderColor: 'var(--accent-purple)',
+      background: 'rgba(88, 58, 255, 0.1)',
+      boxShadow: '0 0 20px rgba(88, 58, 255, 0.1)'
     },
     checkoutButton: {
       width: '100%',
@@ -367,54 +248,15 @@ function Checkout() {
       alignItems: 'center',
       justifyContent: 'center',
       gap: '12px',
-
       boxShadow: '0 8px 32px rgba(224, 26, 79, 0.4)',
-      disabled: {
-        opacity: 0.5,
-        cursor: 'not-allowed',
-      },
-    },
-    errorText: {
-      color: '#EF4444',
-      fontSize: '14px',
-      marginTop: '0.5rem',
-
-    },
-    successMessage: {
-      background: 'rgba(34, 197, 94, 0.1)',
-      border: '1px solid rgba(34, 197, 94, 0.3)',
-      borderRadius: '12px',
-      padding: '2rem',
-      textAlign: 'center',
-      color: '#22C55E',
-      fontSize: '16px',
-      fontWeight: 600,
-
-      marginBottom: '2rem',
-    },
-    successIcon: {
-      width: '60px',
-      height: '60px',
-      borderRadius: '50%',
-      background: 'rgba(34, 197, 94, 0.2)',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      margin: '0 auto 1rem',
-    },
+    }
   };
 
   const headerStart = (
     <motion.div
       style={styles.backButton}
-      whileHover={{
-        background: 'rgba(26, 210, 255, 0.2)',
-        borderColor: '#1AD2FF',
-        color: '#1AD2FF',
-        boxShadow: '0 0 20px rgba(26, 210, 255, 0.4)',
-      }}
+      whileHover={{ scale: 1.1, backgroundColor: 'rgba(26, 210, 255, 0.2)' }}
       onClick={() => navigate('/loja')}
-      title="Voltar para a Loja"
     >
       <ArrowLeft size={20} />
     </motion.div>
@@ -423,16 +265,15 @@ function Checkout() {
   if (success) {
     return (
       <DashboardLayout title="Compra Concluída" headerStart={headerStart}>
-        <div style={styles.contentWrapper}>
-          <div style={styles.successMessage}>
-            <div style={styles.successIcon}>
-              <Check size={32} color="#22C55E" />
-            </div>
-            <p>Sua compra foi realizada com sucesso!</p>
-            <p style={{ fontSize: '14px', fontWeight: 400, marginTop: '0.5rem' }}>
-              Você será redirecionado para o dashboard em breve...
-            </p>
-          </div>
+        <div style={{ textAlign: 'center', padding: '4rem 0' }}>
+          <Check size={64} color="#22C55E" style={{ marginBottom: '1.5rem' }} />
+          <h2 style={{ color: 'white', marginBottom: '1rem' }}>Sua compra foi realizada com sucesso!</h2>
+          <button 
+            onClick={() => navigate('/dashboard')}
+            style={{ padding: '12px 32px', borderRadius: '8px', background: 'var(--gradient-primary)', border: 'none', color: 'white', fontWeight: 700, cursor: 'pointer' }}
+          >
+            Ir para o Dashboard
+          </button>
         </div>
       </DashboardLayout>
     );
@@ -441,239 +282,137 @@ function Checkout() {
   return (
     <DashboardLayout title="Finalizar Compra" headerStart={headerStart}>
       <div style={styles.contentWrapper}>
-        <div style={styles.mainGrid} className="checkout-main-grid">
-          {/* LEFT COLUMN - CART ITEMS */}
-          <div style={styles.leftColumn}>
-            <h2 style={styles.sectionTitle}>Itens no Carrinho</h2>
-
-            {cart.map((item, index) => (
-              <motion.div
-                key={item.id}
-                style={styles.cartItem}
-                initial={{ opacity: 0, x: -20 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: index * 0.1 }}
-              >
-                <div style={styles.itemInfo}>
-                  <div style={styles.itemImage}>
-                    {item.image_url ? (
-                      <>
-                        <img
-                          src={item.image_url}
-                          alt={item.name}
-                          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                          onError={(e) => {
-                            e.target.style.display = 'none';
-                            e.target.nextSibling && (e.target.nextSibling.style.display = 'flex');
-                          }}
-                        />
-                        <span style={{ display: 'none', width: '100%', height: '100%', alignItems: 'center', justifyContent: 'center', fontSize: 'var(--title-h4)' }}>🖼️</span>
-                      </>
-                    ) : (
-                      <>
-                        {(!item.category || item.category === 'Assinatura') && '💎'}
-                        {item.category === 'Plugin' && '⚙️'}
-                        {item.category === 'Mapa' && '🗺️'}
-                        {item.category === 'Mod' && '🔧'}
-                        {item.category === 'Texture Pack' && '🎨'}
-                        {item.category === 'Servidor Pronto' && '🖥️'}
-                      </>
-                    )}
+        <div style={styles.mainGrid} className="checkout-mobile-grid">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '3rem' }}>
+            {/* ITENS NO CARRINHO */}
+            <div>
+              <h2 style={styles.sectionTitle}>Itens no Carrinho</h2>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                {cart.map((item) => (
+                  <div key={item.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '1rem', background: 'rgba(255,255,255,0.03)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                    <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+                      <div style={{ width: '60px', height: '60px', background: 'var(--gradient-primary)', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '24px' }}>
+                        {item.category === 'Plan' ? '💎' : '📦'}
+                      </div>
+                      <div>
+                        <div style={{ color: 'white', fontWeight: 600 }}>{item.name}</div>
+                        <div style={{ color: '#888', fontSize: '0.85rem' }}>{item.category} x {item.quantity}</div>
+                      </div>
+                    </div>
+                    <div style={{ color: 'white', fontWeight: 700 }}>{formatPrice(item.price * item.quantity)}</div>
                   </div>
-                  <div style={styles.itemDetails}>
-                    <div style={styles.itemName}>{item.name}</div>
-                    <div style={styles.itemCategory}>{item.category || item.type}</div>
-                    <div style={styles.quantity}>Quantidade: {item.quantity}</div>
-                  </div>
-                </div>
-
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.5rem' }}>
-                  <div style={styles.itemPrice}>
-                    {formatPrice(item.price * item.quantity)}
-                  </div>
-                  <button
-                    onClick={() => handleRemoveItem(item.id, item.name)}
-                    style={{
-                      background: 'transparent',
-                      border: 'none',
-                      color: '#EF4444',
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '4px',
-                      fontSize: '12px',
-                      fontWeight: 600,
-                      padding: '4px 8px',
-                      borderRadius: '6px',
-                    }}
-                    onMouseEnter={(e) => e.target.style.background = 'rgba(239, 68, 68, 0.1)'}
-                    onMouseLeave={(e) => e.target.style.background = 'transparent'}
-                    title="Remover item"
-                  >
-                    <Trash2 size={14} />
-                    Remover
-                  </button>
-                </div>
-              </motion.div>
-            ))}
-
-            {cart.length === 0 && (
-              <div style={{ textAlign: 'center', padding: '2rem', color: '#B8BDC7' }}>
-                Seu carrinho está vazio.
+                ))}
               </div>
-            )}
+            </div>
+
+            {/* MÉTODO DE PAGAMENTO */}
+            <div>
+              <h2 style={styles.sectionTitle}>Método de Pagamento</h2>
+              <div style={{ display: 'flex', gap: '1rem' }} className="payment-methods-flex">
+                <motion.div 
+                  style={{ ...styles.methodCard, ...(paymentMethod === 'balance' ? styles.methodCardActive : {}) }}
+                  onClick={() => setPaymentMethod('balance')}
+                  whileHover={{ scale: 1.02 }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <Wallet size={24} color={paymentMethod === 'balance' ? 'var(--accent-purple)' : '#888'} />
+                    {paymentMethod === 'balance' && <Check size={20} color="var(--accent-purple)" />}
+                  </div>
+                  <div style={{ color: 'white', fontWeight: 700, marginTop: '0.5rem' }}>Saldo da Carteira</div>
+                  <div style={{ color: '#888', fontSize: '0.85rem' }}>Seu saldo atual: {formatPrice(user.balance || 0)}</div>
+                </motion.div>
+
+                <motion.div 
+                  style={{ ...styles.methodCard, ...(paymentMethod === 'direct' ? styles.methodCardActive : {}) }}
+                  onClick={() => setPaymentMethod('direct')}
+                  whileHover={{ scale: 1.02 }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <QrCode size={24} color={paymentMethod === 'direct' ? 'var(--accent-purple)' : '#888'} />
+                    {paymentMethod === 'direct' && <Check size={20} color="var(--accent-purple)" />}
+                  </div>
+                  <div style={{ color: 'white', fontWeight: 700, marginTop: '0.5rem' }}>PIX / Mercado Pago</div>
+                  <div style={{ color: '#888', fontSize: '0.85rem' }}>Pague agora sem precisar depositar</div>
+                </motion.div>
+              </div>
+            </div>
           </div>
 
-          {/* RIGHT COLUMN - CHECKOUT FORM */}
+          {/* RESUMO E BOTÃO */}
           <div style={styles.rightColumn}>
             <h2 style={styles.sectionTitle}>Resumo do Pedido</h2>
-
-            {/* CUPOM DE DESCONTO */}
-            <div style={styles.formSection}>
-              <h3 style={{ ...styles.sectionTitle, fontSize: '1.125rem', marginBottom: '1rem' }}>
-                <Gift size={18} color="#E01A4F" />
-                Cupom de Desconto
-              </h3>
+            
+            {/* CUPOM */}
+            <div style={{ marginBottom: '2rem' }}>
               {!appliedCoupon ? (
-                <div style={styles.inputGroup}>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
                   <input
                     type="text"
-                    placeholder="Digite seu cupom (ex: PIXELCRAFT10)"
+                    placeholder="Cupom"
                     value={couponCode}
-                    onChange={(e) => setCouponCode(e.target.value)}
-                    style={styles.input}
-                    disabled={validating || loading}
+                    onChange={(e) => setCouponCode(e.target.value.toUpperCase())}
+                    style={{ flex: 1, padding: '12px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', color: 'white' }}
                   />
-                  <motion.button
-                    style={{
-                      ...styles.applyButton,
-                      ...(validating ? styles.applyButton.disabled : {})
-                    }}
-                    whileHover={!validating && !loading ? {
-                      background: 'rgba(224, 26, 79, 0.1)',
-                      borderColor: '#E01A4F'
-                    } : {}}
+                  <button 
                     onClick={applyCoupon}
-                    disabled={!couponCode.trim() || validating || loading}
+                    disabled={validating}
+                    style={{ padding: '0 16px', background: 'rgba(224, 26, 79, 0.2)', border: '1px solid var(--accent-pink)', borderRadius: '8px', color: 'var(--accent-pink)', fontWeight: 600, cursor: 'pointer' }}
                   >
-                    {validating ? 'Aplicando...' : 'Aplicar'}
-                  </motion.button>
+                    {validating ? '...' : 'Ok'}
+                  </button>
                 </div>
               ) : (
-                <div style={styles.discountApplied}>
-                  <Check size={16} />
-                  Cupom "{appliedCoupon.code}" aplicado!
-                  Desconto de {formatPrice(appliedCoupon.discount)}
-                  <motion.button
-                    style={{
-                      background: 'none',
-                      border: 'none',
-                      color: '#22C55E',
-                      cursor: 'pointer',
-                      marginLeft: 'auto'
-                    }}
-                    whileHover={{ scale: 1.1 }}
-                    onClick={() => {
-                      setAppliedCoupon(null);
-                      setDiscount(0);
-                      setCouponCode('');
-                    }}
-                  >
-                    <X size={16} />
-                  </motion.button>
+                <div style={{ padding: '12px', background: 'rgba(34, 197, 94, 0.1)', border: '1px solid #22c55e', borderRadius: '8px', color: '#22c55e', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span>Cupom aplicado!</span>
+                  <X size={16} style={{ cursor: 'pointer' }} onClick={() => { setAppliedCoupon(null); setDiscount(0); }} />
                 </div>
               )}
-
-              {error && !appliedCoupon && (
-                <div style={styles.errorText}>{error}</div>
-              )}
             </div>
 
-            {/* CÓDIGO DE REFERÊNCIA */}
-            <div style={styles.formSection}>
-              <h3 style={{ ...styles.sectionTitle, fontSize: '1.125rem', marginBottom: '1rem' }}>
-                <Users size={18} color="#E01A4F" />
-                Código de Referência
-              </h3>
-              <input
-                type="text"
-                placeholder="Código do amigo que te indicou (opcional)"
-                value={referralCode}
-                onChange={(e) => setReferralCode(e.target.value)}
-                style={styles.input}
-                disabled={loading}
-              />
-              <p style={{
-                fontSize: '12px',
-                color: '#B8BDC7',
-                marginTop: '0.5rem'
-              }}>
-                💡 Seu amigo ganhará créditos quando você usar o código dele
-              </p>
-            </div>
-
-            {/* RESUMO DE PREÇOS */}
-            <div style={styles.priceBreakdown}>
-              <h3 style={{ ...styles.sectionTitle, fontSize: '1.125rem', marginBottom: '1.5rem' }}>
-                <Tag size={18} color="#E01A4F" />
-                Resumo do Pedido
-              </h3>
-
-              <div style={styles.priceRow}>
-                <span style={styles.priceLabel}>Subtotal:</span>
-                <span style={styles.priceValue}>{formatPrice(cartTotal)}</span>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginBottom: '2rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', color: '#888' }}>
+                <span>Subtotal:</span>
+                <span>{formatPrice(cartTotal)}</span>
               </div>
-
               {discount > 0 && (
-                <div style={styles.priceRow}>
-                  <span style={styles.priceLabel}>Desconto:</span>
-                  <span style={styles.discountValue}>-{formatPrice(discount)}</span>
+                <div style={{ display: 'flex', justifyContent: 'space-between', color: '#22c55e' }}>
+                  <span>Desconto:</span>
+                  <span>-{formatPrice(discount)}</span>
                 </div>
               )}
-
-              <div style={{ ...styles.priceRow, ...styles.finalPriceRow }}>
-                <span style={{ fontSize: '1.125rem', fontWeight: 600, color: '#F8F9FA' }}>
-                  Total:
-                </span>
-                <span style={styles.finalPrice}>{formatPrice(finalPrice)}</span>
+              <div style={{ display: 'flex', justifyContent: 'space-between', color: 'white', fontWeight: 700, fontSize: '1.25rem', paddingTop: '1rem', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+                <span>Total:</span>
+                <span style={{ color: 'var(--accent-pink)' }}>{formatPrice(finalPrice)}</span>
               </div>
             </div>
 
-            {/* BOTÃO DE CHECKOUT */}
             <motion.button
-              style={{
-                ...styles.checkoutButton,
-                ...(loading ? styles.checkoutButton.disabled : {})
-              }}
-              whileHover={!loading ? {
-                scale: 1.02,
-                boxShadow: '0 12px 48px rgba(224, 26, 79, 0.6)',
-              } : {}}
-              whileTap={!loading ? { scale: 0.98 } : {}}
+              style={styles.checkoutButton}
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
               onClick={handleCheckout}
               disabled={loading}
             >
-              {loading ? (
-                <>
-                  <Loader2 size={20} style={{ animation: 'spin 1s linear infinite' }} />
-                  Processando...
-                </>
-              ) : (
-                <>
-                  <CreditCard size={20} />
-                  Finalizar Compra
-                </>
-              )}
+              {loading ? <Loader2 size={24} className="animate-spin" /> : <><CreditCard size={20} /> FINALIZAR COMPRA</>}
             </motion.button>
 
             {error && (
-              <div style={{ ...styles.errorText, marginTop: '1rem', textAlign: 'center' }}>
+              <div style={{ marginTop: '1rem', color: '#ef4444', textAlign: 'center', fontSize: '0.9rem', background: 'rgba(239, 68, 68, 0.1)', padding: '10px', borderRadius: '8px' }}>
                 {error}
               </div>
             )}
           </div>
         </div>
       </div>
+      
+      <style>{`
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        .animate-spin { animation: spin 1s linear infinite; }
+        @media (max-width: 900px) {
+          .checkout-mobile-grid { grid-template-columns: 1fr !important; }
+          .payment-methods-flex { flex-direction: column; }
+        }
+      `}</style>
     </DashboardLayout>
   );
 }

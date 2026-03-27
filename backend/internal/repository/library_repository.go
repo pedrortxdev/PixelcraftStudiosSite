@@ -72,3 +72,24 @@ func (r *LibraryRepository) UserOwnsProduct(ctx context.Context, userID uuid.UUI
 	}
 	return count > 0, nil
 }
+
+// AddPurchase adds a product to the user's library within a transaction
+func (r *LibraryRepository) AddPurchase(ctx context.Context, tx *sql.Tx, userID, productID, paymentID uuid.UUID, price float64) error {
+	query := `
+		INSERT INTO user_purchases (user_id, product_id, purchase_price, payment_id, purchased_at)
+		VALUES ($1, $2, $3, $4, NOW())
+		ON CONFLICT (user_id, product_id) DO NOTHING
+	`
+
+	var execTx interface {
+		ExecContext(context.Context, string, ...interface{}) (sql.Result, error)
+	}
+	if tx != nil {
+		execTx = tx
+	} else {
+		execTx = r.db
+	}
+
+	_, err := execTx.ExecContext(ctx, query, userID, productID, price, paymentID)
+	return err
+}
