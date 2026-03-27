@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="pt-BR">
+
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/png" href="/pixelcraft-logo.png" />
+  <link rel="manifest" href="/manifest.json" />
+  <meta name="viewport"
+    content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#0A0E1A" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="description"
+    content="Pixelcraft Studio — Desenvolvimento profissional de servidores para Minecraft, Ragnarok, Metin2, FiveM, MU Online, The Duel e outros games. Arquitetura sólida, performance e experiência única." />
+  <meta name="keywords"
+    content="minecraft, ragnarok, metin2, fivem, mu online, the duel, servidores privados, desenvolvimento de servidores, scripts, plugins, network, premium, brasil" />
+  <meta name="author" content="Pixelcraft" />
+
+  <!-- Sci-Fi Typography -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700;800&family=Teko:wght@400;600;700&display=swap"
+    rel="stylesheet">
+
+  <!-- Open Graph / Facebook -->
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="###" />
+  <meta property="og:title" content="Pixelcraft - Pixelcraft Studio - Arquitetura para Servidores de Games" />
+  <meta property="og:description"
+    content="Desenvolvimento profissional de servidores para Minecraft, Ragnarok, Metin2, FiveM, MU Online e mais. Estrutura, performance e identidade." />
+  <meta property="og:image" content="/og-image.jpg" />
+
+  <!-- Twitter -->
+  <meta property="twitter:card" content="summary_large_image" />
+  <meta property="twitter:url" content="###" />
+  <meta property="twitter:title" content="Pixelcraft Studio - Arquitetura para Servidores de Games" />
+  <meta property="twitter:description"
+    content="Desenvolvimento profissional de servidores para Minecraft, Ragnarok, Metin2, FiveM, MU Online e mais. Estrutura, performance e identidade." />
+  <meta property="twitter:image" content="/og-image.jpg" />
+
+  <title>Pixelcraft - A Arquitetura do Seu Mundo</title>
+</head>
+
+<body>
+  <div id="root"></div>
+  <script type="module" src="/src/main.jsx"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js').then(
+          (registration) => {
+            console.log('ServiceWorker registration successful');
+          },
+          (err) => {
+            console.log('ServiceWorker registration failed: ', err);
+          }
+        );
+      });
+    }
+  </script>
+</body>
+
+</html>

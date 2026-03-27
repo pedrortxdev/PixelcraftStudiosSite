@@ -1,0 +1,289 @@
+/* Pixelcraft - Modern Premium Component Styles */
+
+/* ======================== */
+/* CSS Custom Properties    */
+/* ======================== */
+:root {
+  --accent-red: #E01A4F;
+  --accent-orange: #FF6B35;
+  --accent-gold: #FFD700;
+  --accent-blue: #1AD2FF;
+  --accent-purple: #583AFF;
+  --accent-glow: rgba(224, 26, 79, 0.3);
+
+  --bg-primary: #0A0E1A;
+  --bg-secondary: #0D1220;
+  --bg-card: rgba(15, 18, 30, 0.6);
+
+  --text-primary: #F8F9FA;
+  --text-secondary: #B8BDC7;
+  --text-muted: #6C7384;
+
+  --gradient-primary: linear-gradient(135deg, #E01A4F 0%, #FF6B35 100%);
+  --gradient-secondary: linear-gradient(135deg, #583AFF 0%, #1AD2FF 100%);
+  --gradient-bg: linear-gradient(180deg, #0A0E1A 0%, #0D1220 50%, #0A0E1A 100%);
+  --gradient-gold: linear-gradient(135deg, #FFD700 0%, #FFA500 100%);
+}
+
+/* ======================== */
+/* Premium Text Gradients   */
+/* ======================== */
+.text-gradient {
+  background: linear-gradient(135deg, #E01A4F 0%, #FF6B35 50%, #FFD700 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.text-gradient-blue {
+  background: linear-gradient(135deg, #583AFF 0%, #1AD2FF 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ======================== */
+/* Custom Shadow Utilities  */
+/* ======================== */
+.shadow-primary {
+  box-shadow: 0 20px 40px rgba(224, 26, 79, 0.3);
+}
+
+.shadow-secondary {
+  box-shadow: 0 20px 40px rgba(255, 215, 0, 0.3);
+}
+
+.shadow-vibrant {
+  box-shadow:
+    0 20px 40px rgba(224, 26, 79, 0.3),
+    0 10px 20px rgba(255, 215, 0, 0.2);
+}
+
+.shadow-glow {
+  box-shadow:
+    0 0 20px rgba(224, 26, 79, 0.4),
+    0 0 40px rgba(224, 26, 79, 0.2),
+    0 0 60px rgba(224, 26, 79, 0.1);
+}
+
+/* ======================== */
+/* 3D Transform Utilities   */
+/* ======================== */
+.preserve-3d {
+  transform-style: preserve-3d;
+}
+
+.perspective-1000 {
+  perspective: 1000px;
+}
+
+/* ======================== */
+/* Premium Animations       */
+/* ======================== */
+@keyframes float {
+
+  0%,
+  100% {
+    transform: translateY(0) rotate(0deg);
+  }
+
+  50% {
+    transform: translateY(-20px) rotate(2deg);
+  }
+}
+
+@keyframes pulse-glow {
+
+  0%,
+  100% {
+    box-shadow: 0 0 20px rgba(224, 26, 79, 0.4), 0 0 40px rgba(224, 26, 79, 0.2);
+  }
+
+  50% {
+    box-shadow: 0 0 30px rgba(224, 26, 79, 0.6), 0 0 60px rgba(224, 26, 79, 0.3);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+@keyframes gradient-shift {
+  0% {
+    background-position: 0% 50%;
+  }
+
+  50% {
+    background-position: 100% 50%;
+  }
+
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+@keyframes particle-float {
+
+  0%,
+  100% {
+    transform: translateY(0) translateX(0);
+    opacity: 0.6;
+  }
+
+  50% {
+    transform: translateY(-30px) translateX(10px);
+    opacity: 1;
+  }
+}
+
+.float-animation {
+  animation: float 6s ease-in-out infinite;
+}
+
+.pulse-glow-animation {
+  animation: pulse-glow 3s ease-in-out infinite;
+}
+
+.shimmer-effect {
+  background: linear-gradient(90deg,
+      transparent 0%,
+      rgba(255, 255, 255, 0.1) 50%,
+      transparent 100%);
+  background-size: 200% 100%;
+  animation: shimmer 2s infinite;
+}
+
+/* ======================== */
+/* Glass Morphism           */
+/* ======================== */
+.glass {
+  background: rgba(15, 18, 30, 0.6);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.glass-strong {
+  background: rgba(10, 14, 26, 0.85);
+  backdrop-filter: blur(30px);
+  -webkit-backdrop-filter: blur(30px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* ======================== */
+/* Button Enhancements      */
+/* ======================== */
+.btn-premium {
+  position: relative;
+  overflow: hidden;
+  border-radius: 0 !important;
+  clip-path: polygon(12px 0, 100% 0, 100% calc(100% - 12px), calc(100% - 12px) 100%, 0 100%, 0 12px);
+  border: 1px solid rgba(224, 26, 79, 0.5);
+  transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+
+.btn-premium::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg,
+      transparent,
+      rgba(255, 255, 255, 0.2),
+      transparent);
+  transition: left 0.5s;
+}
+
+.btn-premium:hover::before {
+  left: 100%;
+}
+
+/* ======================== */
+/* Card Hover Effects       */
+/* ======================== */
+.card-hover {
+  transition: all 0.4s cubic-bezier(0.25, 0.8, 0.25, 1);
+  border-radius: 0 !important;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  clip-path: polygon(20px 0, 100% 0, 100% calc(100% - 20px), calc(100% - 20px) 100%, 0 100%, 0 20px);
+}
+
+.card-hover:hover {
+  transform: translateY(-8px);
+  border-color: rgba(224, 26, 79, 0.5);
+  box-shadow:
+    -10px 10px 40px rgba(224, 26, 79, 0.15),
+    0 0 0 1px rgba(224, 26, 79, 0.2);
+}
+
+/* ======================== */
+/* Responsive Utilities     */
+/* ======================== */
+@media (max-width: 768px) {
+  .desktop-only {
+    display: none !important;
+  }
+
+  .mobile-full {
+    width: 100% !important;
+  }
+
+  .mobile-stack {
+    flex-direction: column !important;
+    gap: 1rem !important;
+  }
+}
+
+/* ======================== */
+/* Scrollbar Styling        */
+/* ======================== */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(10, 14, 26, 0.5);
+}
+
+::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #E01A4F, #FF6B35);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #FF6B35, #FFD700);
+}
+
+/* ======================== */
+/* Selection Styling        */
+/* ======================== */
+::selection {
+  background: rgba(224, 26, 79, 0.3);
+  color: #FFFFFF;
+}
+
+/* ======================== */
+/* Spin Animation           */
+/* ======================== */
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-spin {
+  animation: spin 1s linear infinite;
+}

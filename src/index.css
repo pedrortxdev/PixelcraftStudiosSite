@@ -1,0 +1,792 @@
+/* Inter font is loaded via @fontsource/inter in main.jsx */
+@import url('https://fonts.googleapis.com/css2?family=VT323&display=swap');
+
+/* Minecraft font for role badges */
+@font-face {
+  font-family: 'MinecraftFont';
+  src: url('/fonts/minecraft_font.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ===== Select/Option Dark Mode Fix ===== */
+select,
+select option {
+  background-color: #0f1219;
+  color: #F8F9FA;
+}
+
+select:focus {
+  outline: 1px solid rgba(88, 58, 255, 0.5);
+  border-color: rgba(88, 58, 255, 0.5);
+}
+
+:root {
+  font-family: 'Inter', system-ui, Avenir, Helvetica, Arial, sans-serif;
+  --font-display: 'Teko', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+
+  line-height: 1.5;
+  font-weight: 400;
+
+  color-scheme: dark;
+  color: rgba(255, 255, 255, 0.87);
+  background-color: #0A0E1A;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  /* ===== DESIGN TOKENS ===== */
+
+  /* Backgrounds */
+  --bg-primary: #0A0E1A;
+  --bg-secondary: #0F1225;
+  --bg-card: rgba(21, 26, 38, 0.6);
+  --bg-card-hover: rgba(21, 26, 38, 0.8);
+  --bg-input: rgba(10, 14, 26, 0.6);
+  --bg-modal: rgba(10, 14, 26, 0.95);
+  --bg-overlay: rgba(0, 0, 0, 0.6);
+
+  /* Borders */
+  --border-card: rgba(88, 58, 255, 0.2);
+  --border-input: rgba(88, 58, 255, 0.3);
+  --border-input-focus: rgba(88, 58, 255, 0.6);
+  --border-subtle: rgba(248, 249, 250, 0.05);
+
+  /* Text */
+  --text-primary: #FFFFFF;
+  --text-secondary: #C8D0DD;
+  --text-muted: #8A94A6;
+
+  /* Status Colors */
+  --status-success: #22C55E;
+  --status-error: #EF4444;
+  --status-warning: #EAB308;
+  --status-info: #3B82F6;
+  --status-success-bg: rgba(34, 197, 94, 0.1);
+  --status-error-bg: rgba(239, 68, 68, 0.1);
+  --status-warning-bg: rgba(234, 179, 8, 0.1);
+  --status-info-bg: rgba(59, 130, 246, 0.1);
+
+  /* Brand Gradients */
+  --gradient-primary: linear-gradient(135deg, #583AFF 0%, #1AD2FF 100%);
+  --gradient-cta: linear-gradient(135deg, #E01A4F 0%, #FF6B35 100%);
+  --gradient-primary-hover: linear-gradient(135deg, #6B4FFF 0%, #3DD9FF 100%);
+  --gradient-cta-hover: linear-gradient(135deg, #F22A5F 0%, #FF7D4D 100%);
+
+  /* Accent */
+  --accent-purple: #583AFF;
+  --accent-cyan: #1AD2FF;
+  --accent-red: #E01A4F;
+  --accent-orange: #FF6B35;
+
+  /* Button Padding Tokens */
+  --btn-padding-sm: 0.5rem 1rem;
+  --btn-padding-md: 0.75rem 1.5rem;
+  --btn-padding-lg: 1rem 2rem;
+  --btn-padding-xl: 1.5rem 3rem;
+
+  /* Typography Tokens */
+  --title-hero: clamp(2.5rem, 5vw, 4rem);
+  --title-h1: clamp(2rem, 4vw, 3rem);
+  --title-h2: clamp(1.75rem, 3vw, 2.5rem);
+  --title-h3: clamp(1.5rem, 2vw, 2rem);
+  --title-h4: clamp(1.25rem, 1.5vw, 1.5rem);
+
+  /* Border Radius */
+  --radius-sm: 0.5rem;
+  --radius-md: 0.75rem;
+  --radius-lg: 1rem;
+  --radius-xl: 1.5rem;
+  --radius-pill: 999px;
+
+  /* Spacing (sidebar width) */
+  --sidebar-width: 280px;
+  --sidebar-width-collapsed: 70px;
+
+  /* Shadows */
+  --shadow-card: 0 4px 20px rgba(0, 0, 0, 0.3);
+  --shadow-card-hover: 0 8px 30px rgba(88, 58, 255, 0.15);
+  --shadow-modal: 0 20px 60px rgba(0, 0, 0, 0.5);
+
+  /* Transitions */
+  --transition-fast: 0.2s ease;
+  --transition-normal: 0.3s ease;
+  --transition-slow: 0.5s ease;
+}
+
+/* ===== DYNAMIC PREFERENCES ===== */
+
+/* Font Preferences */
+[data-font="modern"] {
+  --font-primary: 'Inter', system-ui, sans-serif;
+  --font-display: 'Inter', system-ui, sans-serif; /* Disable Teko */
+}
+
+[data-font="gamer"] {
+  --font-primary: 'Inter', system-ui, sans-serif;
+  --font-display: 'Teko', sans-serif;
+}
+
+[data-font="classic"] {
+  --font-primary: 'MinecraftFont', monospace;
+  --font-display: 'MinecraftFont', monospace;
+}
+
+:root {
+  font-family: var(--font-primary, 'Inter', system-ui, sans-serif);
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-display, 'Teko', sans-serif);
+}
+
+/* ===== MINECRAFT FONT FIX ===== */
+/* Prevent clipping when Minecraft font is large */
+[data-font="classic"] h1,
+[data-font="classic"] h2,
+[data-font="classic"] h3,
+[data-font="classic"] h4,
+[data-font="classic"] h5,
+[data-font="classic"] h6,
+[data-font="classic"] .minecraft-font,
+[data-font="classic"] button,
+[data-font="classic"] span,
+[data-font="classic"] p,
+[data-font="classic"] a,
+[data-font="classic"] label {
+  line-height: 1.4 !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+}
+
+[data-font="classic"] h1 { line-height: 1.3 !important; }
+[data-font="classic"] h2 { line-height: 1.35 !important; }
+
+/* Fix for inline elements with Minecraft font */
+[data-font="classic"] * {
+  min-height: auto;
+}
+
+/* Ensure containers have enough space */
+[data-font="classic"] .card,
+[data-font="classic"] .btn,
+[data-font="classic"] .badge,
+[data-font="classic"] [style*="fontFamily*='MinecraftFont'"],
+[data-font="classic"] [style*="fontFamily: 'MinecraftFont'"] {
+  line-height: 1.4 !important;
+  overflow: visible !important;
+}
+
+/* Global fix for MinecraftFont elements regardless of data-font attribute */
+[style*="fontFamily*='MinecraftFont'"],
+[style*="fontFamily: 'MinecraftFont'"],
+[style*="fontFamily:\"MinecraftFont\""] {
+  line-height: 1.4 !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  min-height: auto !important;
+}
+
+/* Fix for elements using MinecraftFont class */
+.minecraft-font {
+  line-height: 1.4 !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+}
+
+/* Additional padding for large Minecraft font text */
+[data-font="classic"] h1,
+h1.minecraft-font,
+h1[style*="fontFamily*='MinecraftFont'"],
+h1[style*="fontFamily: 'MinecraftFont'"] {
+  padding-bottom: 0.1em !important;
+  padding-top: 0.1em !important;
+}
+
+[data-font="classic"] h2,
+h2.minecraft-font,
+h2[style*="fontFamily*='MinecraftFont'"],
+h2[style*="fontFamily: 'MinecraftFont'"] {
+  padding-bottom: 0.08em !important;
+  padding-top: 0.08em !important;
+}
+
+/* Utility class for Minecraft font elements */
+.minecraft-text-fix {
+  line-height: 1.4 !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  padding: 0.05em 0 !important;
+}
+
+/* Density Preferences */
+[data-density="minimalist"] {
+  --btn-padding-sm: 0.25rem 0.75rem;
+  --btn-padding-md: 0.5rem 1rem;
+  --btn-padding-lg: 0.75rem 1.5rem;
+  --btn-padding-xl: 1rem 2rem;
+  
+  --title-hero: clamp(2rem, 4vw, 3rem);
+  --title-h1: clamp(1.75rem, 3vw, 2.5rem);
+  --title-h2: clamp(1.5rem, 2.5vw, 2rem);
+  --title-h3: clamp(1.25rem, 2vw, 1.75rem);
+  --title-h4: clamp(1.1rem, 1.5vw, 1.25rem);
+  
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+
+  /* Dashboard minimalist specific */
+  --card-value-size: 2rem;
+  --panel-padding: 1rem;
+  --bento-min-height: 120px;
+  --bento-gap: 0.75rem;
+}
+
+[data-density="comfortable"] {
+  --card-value-size: 4rem;
+  --panel-padding: 2rem;
+  --bento-min-height: 200px;
+  --bento-gap: 1.5rem;
+}
+
+[data-density="minimalist"] .stat-card-v4 {
+  padding: 1.25rem !important;
+}
+
+[data-density="minimalist"] .stat-icon-v4 {
+  width: 32px !important;
+  height: 32px !important;
+}
+
+[data-density="minimalist"] .stat-icon-v4-bg {
+  display: none !important;
+}
+
+[data-density="minimalist"] .dashboard-main section {
+  min-height: 250px !important;
+}
+
+/* Background Filter Preferences */
+[data-bg-filter="off"] body::after {
+  display: none !important;
+}
+
+[data-bg-filter="off"] body {
+  background-image: none !important;
+}
+
+/* Shared animation — used by all loading spinners */
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+a {
+  font-weight: 500;
+  color: #E01A4F;
+  text-decoration: inherit;
+  transition: color 0.2s;
+}
+
+a:hover {
+  color: #FFFFFF;
+}
+
+html,
+body {
+  max-width: 100vw;
+  overflow-x: hidden;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  /* Grid lines background (Architecture / Sci-Fi vibe) */
+  background-color: var(--bg-primary);
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+  background-size: 40px 40px;
+  position: relative;
+}
+
+/* Global Grain / Static Noise effect */
+body::after {
+  content: "";
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+  z-index: 9999;
+  background-image: url('data:image/svg+xml;utf8,%3Csvg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg"%3E%3Cfilter id="noiseFilter"%3E%3CfeTurbulence type="fractalNoise" baseFrequency="0.65" numOctaves="3" stitchTiles="stitch"/%3E%3C/filter%3E%3Crect width="100%25" height="100%25" filter="url(%23noiseFilter)"/%3E%3C/svg%3E');
+  opacity: 0.06;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: var(--font-display);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+h1 {
+  font-size: 4em;
+  line-height: 1;
+}
+
+.mono-data {
+  font-family: var(--font-mono);
+  letter-spacing: -0.5px;
+}
+
+button {
+  border-radius: 8px;
+  border: 1px solid transparent;
+  padding: 0.6em 1.2em;
+  font-size: 1em;
+  font-weight: 500;
+  font-family: inherit;
+  background-color: #1a1a1a;
+  cursor: pointer;
+  transition: border-color 0.25s;
+}
+
+button:hover {
+  border-color: #646cff;
+}
+
+button:focus,
+button:focus-visible {
+  outline: 4px auto -webkit-focus-ring-color;
+}
+
+@keyframes red-cycling {
+  0% {
+    color: #FFD700;
+    text-shadow: -1px -1px 0 #CC5500, 1px -1px 0 #CC5500, -1px 1px 0 #CC5500, 1px 1px 0 #CC5500;
+  }
+
+  25% {
+    color: #FF0000;
+    text-shadow: -1px -1px 0 #990000, 1px -1px 0 #990000, -1px 1px 0 #990000, 1px 1px 0 #990000;
+  }
+
+  50% {
+    color: #8B0000;
+    text-shadow: -1px -1px 0 #330000, 1px -1px 0 #330000, -1px 1px 0 #330000, 1px 1px 0 #330000;
+  }
+
+  75% {
+    color: #FF4D4D;
+    text-shadow: -1px -1px 0 #990000, 1px -1px 0 #990000, -1px 1px 0 #990000, 1px 1px 0 #990000;
+  }
+
+  100% {
+    color: #FFD700;
+    text-shadow: -1px -1px 0 #CC5500, 1px -1px 0 #CC5500, -1px 1px 0 #CC5500, 1px 1px 0 #CC5500;
+  }
+}
+
+.admin-name-static {
+  color: #FFD700;
+  text-shadow: -1px -1px 0 #CC5500, 1px -1px 0 #CC5500, -1px 1px 0 #CC5500, 1px 1px 0 #CC5500;
+  font-family: 'VT323', monospace;
+  font-size: 1.2rem;
+  letter-spacing: 1px;
+  display: inline-block;
+  transition: all 0.3s ease;
+}
+
+.admin-name-static:hover {
+  animation: red-cycling 1s linear infinite;
+  transform: scale(1.05);
+}
+
+/* ===== RESPONSIVE: Dashboard Mobile Sidebar ===== */
+@media (max-width: 768px) {
+  .dashboard-sidebar {
+    transform: translateX(-100%);
+  }
+
+  .dashboard-sidebar.open,
+  /* When isMobileSidebarOpen is true, JS toggles inline transform */
+  .dashboard-hamburger {
+    display: flex !important;
+  }
+}
+
+/* Fix main content on mobile when sidebar is hidden */
+@media (max-width: 768px) {
+
+  /* Let DashboardLayout main content fill full width */
+  .dashboard-main {
+    margin-left: 0 !important;
+    padding: 1.5rem 1rem !important;
+  }
+}
+
+/* ===== RESPONSIVE: Login/Register pages ===== */
+@media (max-width: 900px) {
+
+  /* Collapse hero grids to single column */
+  .auth-hero-grid {
+    grid-template-columns: 1fr !important;
+    gap: 2rem !important;
+    text-align: center;
+  }
+
+  .auth-nav-links {
+    display: none !important;
+  }
+}
+
+/* ===== RESPONSIVE: Dashboard & Inner Page Grids ===== */
+@media (max-width: 768px) {
+
+  /* Dashboard 4-col cards → 2 cols */
+  .dashboard-cards-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 1rem !important;
+  }
+
+  /* Dashboard panels 2-col → 1 col */
+  .dashboard-panels-grid {
+    grid-template-columns: 1fr !important;
+    gap: 1.5rem !important;
+  }
+
+  /* Wallet 3-col summary → 1 col */
+  .wallet-summary-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Wallet transaction list → simpler layout */
+  .wallet-list-item {
+    grid-template-columns: 1fr !important;
+    gap: 0.5rem !important;
+  }
+
+  /* History 2-col → 1 col */
+  .history-column-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* MyProjects 3-col stats → 1 col on very small */
+  .projects-stats-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 1rem !important;
+  }
+
+  /* Checkout 2-col → 1 col */
+  .checkout-main-grid {
+    grid-template-columns: 1fr !important;
+    gap: 1.5rem !important;
+  }
+
+  /* Modals max-width */
+  .modal-content {
+    width: 95% !important;
+    max-width: 95vw !important;
+  }
+}
+
+/* Settings Grids Default */
+.settings-main-grid {
+  display: grid;
+  grid-template-columns: 360px 1fr;
+}
+
+.settings-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+
+/* Downloads Grids Default */
+.downloads-grid-layout {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+}
+
+@media (max-width: 900px) {
+
+  /* Settings forms */
+  .settings-main-grid,
+  .settings-form-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Downloads layout */
+  .downloads-grid-layout {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Support flex layout */
+  .support-flex-layout {
+    flex-direction: column !important;
+    height: auto !important;
+    min-height: calc(100vh - 140px);
+  }
+
+  .support-flex-layout>div {
+    width: 100% !important;
+    height: 500px !important;
+    /* Fixed height for chat areas on mobile */
+  }
+
+  /* Home Hero Grid */
+  .home-hero-grid {
+    grid-template-columns: 1fr !important;
+    gap: 3rem !important;
+    text-align: center;
+  }
+
+  .home-hero-grid>div:first-child {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+}
+
+/* Home Hero Default */
+.home-hero-grid {
+  grid-template-columns: 1.2fr 1fr;
+}
+
+@media (max-width: 480px) {
+
+  /* Dashboard cards → 1 col on tiny screens */
+  .dashboard-cards-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* MyProjects stats → 1 col on tiny */
+  .projects-stats-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* ===== Mobile Swipe Carousel ===== */
+@media (max-width: 768px) {
+  .mobile-swipe-carousel {
+    display: flex !important;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    gap: 1.5rem !important;
+    padding-bottom: 2rem;
+    padding-left: 1rem;
+    padding-right: 1rem;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    /* Firefox */
+  }
+
+  .mobile-swipe-carousel::-webkit-scrollbar {
+    display: none;
+    /* Safari/Chrome */
+  }
+
+  .mobile-swipe-carousel>* {
+    min-width: 85vw !important;
+    scroll-snap-align: center;
+  }
+}
+
+/* ===== Mobile Bottom Sheet Modal ===== */
+@media (max-width: 768px) {
+  .mobile-bottom-sheet {
+    align-items: flex-end !important;
+    padding: 0 !important;
+  }
+
+  .mobile-bottom-sheet>div {
+    width: 100% !important;
+    max-width: 100% !important;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0 !important;
+    margin: 0 !important;
+    padding-bottom: calc(2rem + env(safe-area-inset-bottom)) !important;
+    border-bottom: none !important;
+  }
+}
+
+/* ===== Fintech List Item ===== */
+@media (max-width: 768px) {
+  .mobile-list-item-fintech {
+    display: flex !important;
+    justify-content: space-between !important;
+    align-items: center !important;
+    padding: 1rem !important;
+    flex-wrap: wrap !important;
+    gap: 0.5rem !important;
+  }
+
+  .mobile-list-item-fintech>div:nth-child(1) {
+    order: 1;
+    width: calc(100% - 130px) !important;
+    font-size: 0.95rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .mobile-list-item-fintech>div:nth-child(3) {
+    order: 2;
+    width: 130px !important;
+    text-align: right;
+    font-size: 1.05rem;
+  }
+
+  .mobile-list-item-fintech>div:nth-child(2) {
+    order: 3;
+    width: calc(100% - 100px) !important;
+    font-size: 0.8rem;
+    color: var(--text-muted) !important;
+  }
+
+  .mobile-list-item-fintech>div:nth-child(4) {
+    order: 4;
+    width: 100px !important;
+    display: flex;
+    justify-content: flex-end;
+  }
+}
+
+/* ===== Stacked Table Utility (Responsive) ===== */
+@media (max-width: 768px) {
+
+  .mobile-stacked-table,
+  .mobile-stacked-table thead,
+  .mobile-stacked-table tbody,
+  .mobile-stacked-table th,
+  .mobile-stacked-table td,
+  .mobile-stacked-table tr {
+    display: block;
+  }
+
+  .mobile-stacked-table thead tr {
+    display: none;
+  }
+
+  .mobile-stacked-table tr {
+    border: 1px solid rgba(255, 255, 255, 0.1) !important;
+    border-radius: var(--radius-lg);
+    margin-bottom: 1rem;
+    background: var(--bg-card);
+    padding: 0.5rem 0;
+  }
+
+  .mobile-stacked-table td {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.03) !important;
+    position: relative;
+    padding: 0.75rem 1rem 0.75rem 40% !important;
+    text-align: right;
+    min-height: 40px;
+    display: flex !important;
+    align-items: center;
+    justify-content: flex-end;
+  }
+
+  .mobile-stacked-table td:last-child {
+    border-bottom: none !important;
+  }
+
+  .mobile-stacked-table td:before {
+    position: absolute;
+    top: 50%;
+    left: 1rem;
+    transform: translateY(-50%);
+    width: 35%;
+    padding-right: 10px;
+    white-space: nowrap;
+    text-align: left;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    content: attr(data-label);
+  }
+
+  .mobile-stacked-table td>div {
+    text-align: right;
+    justify-content: flex-end;
+  }
+
+  .mobile-stacked-table td .userInfo {
+    flex-direction: row-reverse;
+  }
+}
+
+/* ===== Admin Support Mobile Chat ===== */
+.mobile-back-btn {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .admin-support-container {
+    gap: 0 !important;
+  }
+
+  .admin-support-sidebar {
+    width: 100% !important;
+  }
+
+  .admin-support-chat {
+    width: 100% !important;
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    z-index: 1000 !important;
+    background: var(--bg-background) !important;
+    border-radius: 0 !important;
+    border: none !important;
+  }
+
+  .admin-support-container:not(.ticket-selected) .admin-support-chat {
+    display: none !important;
+  }
+
+  .admin-support-container.ticket-selected .admin-support-sidebar {
+    display: none !important;
+  }
+
+  .admin-support-input-area {
+    padding-bottom: calc(1rem + env(safe-area-inset-bottom)) !important;
+  }
+
+  .mobile-back-btn {
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    padding: 4px;
+    margin-right: 8px;
+  }
+}
+
+
+/* ===== Glass Card Utility ===== */
+.glass-card-element {
+  background: var(--bg-card);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--border-card);
+}
