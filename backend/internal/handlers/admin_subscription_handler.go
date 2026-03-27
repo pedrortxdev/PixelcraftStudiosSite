@@ -116,16 +116,24 @@ func (h *AdminSubscriptionHandler) GetActiveSubscriptions(c *gin.Context) {
 
 // GetSubscriptionChat handles GET /api/v1/admin/subscriptions/:id/chat
 func (h *AdminSubscriptionHandler) GetSubscriptionChat(c *gin.Context) {
-	subID := c.Param("id")
-	// Admin ID is not strictly needed for reading history as admin, 
-	// but we need to pass userID to the service. 
-	// Since admins can see everything, we can pass the admin's ID or empty if service allows.
-	// The service signature is GetChatHistory(ctx, subID, userID, isAdmin).
-	// If isAdmin is true, userID check is skipped in service, so we can pass anything or the admin's ID.
-	adminID := c.GetString("user_id")
+	subIDStr := c.Param("id")
+	adminIDStr := c.GetString("user_id")
+
+	// Parse UUIDs at the boundary
+	subID, err := uuid.Parse(subIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid subscription ID format"})
+		return
+	}
+
+	adminID, err := uuid.Parse(adminIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid admin ID format"})
+		return
+	}
 
 	// Pass isAdmin = true to bypass ownership check
-	messages, err := h.messageService.GetChatHistory(c.Request.Context(), subID, adminID, true)
+	messages, err := h.messageService.GetChatHistory(c.Request.Context(), subID, adminID, true, nil)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch chat history"})
 		return
@@ -136,8 +144,21 @@ func (h *AdminSubscriptionHandler) GetSubscriptionChat(c *gin.Context) {
 
 // SendSubscriptionMessage handles POST /api/v1/admin/subscriptions/:id/chat
 func (h *AdminSubscriptionHandler) SendSubscriptionMessage(c *gin.Context) {
-	subID := c.Param("id")
-	adminID := c.GetString("user_id")
+	subIDStr := c.Param("id")
+	adminIDStr := c.GetString("user_id")
+
+	// Parse UUIDs at the boundary
+	subID, err := uuid.Parse(subIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid subscription ID format"})
+		return
+	}
+
+	adminID, err := uuid.Parse(adminIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid admin ID format"})
+		return
+	}
 
 	var req models.CreateMessageRequest
 	if err := c.ShouldBindJSON(&req); err != nil {

@@ -98,7 +98,7 @@ func main() {
 	)
 
 	checkoutService := service.NewCheckoutService(db.DB, productRepo, discountRepo, paymentRepo, userRepo, subscriptionRepo, libraryRepo, depositService)
-	depositService.SetCheckoutService(checkoutService) // Break circular dependency
+	depositService.SetCheckoutGateway(checkoutService) // Interface-based decoupling (no circular dependency)
 	libraryService := service.NewLibraryService(libraryRepo, productRepo, fileService)
 	historyService := service.NewHistoryService(paymentRepo, libraryRepo)
 	subscriptionService := service.NewSubscriptionService(subscriptionRepo)

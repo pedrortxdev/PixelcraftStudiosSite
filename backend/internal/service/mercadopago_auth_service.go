@@ -1,10 +1,10 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"sync"
@@ -89,7 +89,7 @@ func (s *MercadoPagoAuthService) refreshToken(ctx context.Context) (string, erro
 	}
 
 	// Use http.NewRequestWithContext to propagate context cancellation
-	req, err := http.NewRequestWithContext(ctx, "POST", url, &byteReader{data: body})
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
@@ -133,19 +133,4 @@ func (s *MercadoPagoAuthService) refreshToken(ctx context.Context) (string, erro
 	log.Printf("MercadoPagoAuthService: Token refreshed successfully. Expires in %d seconds.", result.ExpiresIn)
 
 	return s.token, nil
-}
-
-// byteReader implements io.Reader for byte slices
-type byteReader struct {
-	data []byte
-	pos  int
-}
-
-func (b *byteReader) Read(p []byte) (int, error) {
-	if b.pos >= len(b.data) {
-		return 0, io.EOF
-	}
-	n := copy(p, b.data[b.pos:])
-	b.pos += n
-	return n, nil
 }

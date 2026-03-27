@@ -61,3 +61,36 @@ func (r *MessageRepository) GetBySubscriptionID(ctx context.Context, subID uuid.
 	}
 	return messages, nil
 }
+
+// GetBySubscriptionIDPaginated retrieves paginated messages for a subscription
+func (r *MessageRepository) GetBySubscriptionIDPaginated(ctx context.Context, subID uuid.UUID, limit, offset int) ([]models.Message, error) {
+	query := `
+		SELECT id, subscription_id, user_id, content, is_admin, created_at
+		FROM messages
+		WHERE subscription_id = $1
+		ORDER BY created_at ASC
+		LIMIT $2 OFFSET $3
+	`
+	rows, err := r.db.QueryContext(ctx, query, subID, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query messages: %w", err)
+	}
+	defer rows.Close()
+
+	var messages []models.Message
+	for rows.Next() {
+		var m models.Message
+		err := rows.Scan(
+			&m.ID, &m.SubscriptionID, &m.UserID, &m.Content, &m.IsAdmin, &m.CreatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan message: %w", err)
+		}
+		messages = append(messages, m)
+	}
+
+	if messages == nil {
+		messages = []models.Message{}
+	}
+	return messages, nil
+}

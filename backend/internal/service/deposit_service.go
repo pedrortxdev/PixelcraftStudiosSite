@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,11 +16,16 @@ import (
 	"github.com/pixelcraft/api/internal/repository"
 )
 
+// CheckoutGateway defines the interface for checkout operations (decouples circular dependency)
+type CheckoutGateway interface {
+	FinalizeDirectPurchase(ctx context.Context, paymentID string, gatewayID string) error
+}
+
 type DepositService struct {
 	repo            *repository.TransactionRepository
 	userRepo        *repository.UserRepository
 	paymentRepo     *repository.PaymentRepository
-	checkoutService *CheckoutService
+	checkoutGateway CheckoutGateway
 	authService     *MercadoPagoAuthService
 	webhookURL      string
 	depositURLs     DepositURLs
@@ -52,9 +58,9 @@ func NewDepositService(
 	}
 }
 
-// SetCheckoutService breaks circular dependency
-func (s *DepositService) SetCheckoutService(cs *CheckoutService) {
-	s.checkoutService = cs
+// SetCheckoutGateway sets the checkout gateway (breaks circular dependency via interface)
+func (s *DepositService) SetCheckoutGateway(gw CheckoutGateway) {
+	s.checkoutGateway = gw
 }
 
 // MPPaymentResponse partial struct for Pix response
@@ -78,8 +84,8 @@ type MPPreferenceResponse struct {
 
 // MPBalanceResponse represents the balance response from Mercado Pago
 type MPBalanceResponse struct {
-	TotalAmount     float64 `json:"total_amount"`
-	AvailableAmount float64 `json:"available_amount"`
+	TotalAmount       float64 `json:"total_amount"`
+	AvailableAmount   float64 `json:"available_amount"`
 	UnavailableAmount float64 `json:"unavailable_amount"`
 }
 
@@ -154,9 +160,10 @@ func (s *DepositService) createPixPayment(ctx context.Context, userID uuid.UUID,
 	if err == nil && user != nil && user.Email != "" {
 		payerEmail = user.Email
 	} else {
-		// Fallback: Use a generic email that MP accepts for PIX
-		// PIX doesn't require email validation, so this is safe
-		payerEmail = fmt.Sprintf("deposit-%s@noreply.mercadopago.com", userID.String()[:8])
+		// Fallback: Use the production domain for compliance
+		// PIX doesn't require email validation, but MP API may reject invalid TLDs.
+		// Using pixelcraft-studio.store ensures it passes regex validation.
+		payerEmail = fmt.Sprintf("pix-%s@pixelcraft-studio.store", userID.String()[:8])
 	}
 
 	payload := map[string]interface{}{
@@ -167,10 +174,10 @@ func (s *DepositService) createPixPayment(ctx context.Context, userID uuid.UUID,
 			"first_name": "Cliente",
 			"last_name":  "PIX",
 		},
-		"description":           "Deposito em Carteira - Pixelcraft Studio",
-		"external_reference":    fmt.Sprintf("DEPOSIT_%s", userID.String()),
-		"installments":          1,
-		"statement_descriptor":  "PIXELCRAFT STUDIO",
+		"description":          "Deposito em Carteira - Pixelcraft Studio",
+		"external_reference":   fmt.Sprintf("DEPOSIT_%s", userID.String()),
+		"installments":         1,
+		"statement_descriptor": "PIXELCRAFT STUDIO",
 	}
 
 	if s.webhookURL != "" {
@@ -279,9 +286,18 @@ func (s *DepositService) CreatePreference(ctx context.Context, userID uuid.UUID,
 }
 
 // ProcessWebhook handles the incoming webhook from Mercado Pago
+// Uses idempotency to prevent double-processing of the same webhook
 func (s *DepositService) ProcessWebhook(ctx context.Context, paymentID string) error {
 	log.Printf("Deposit Service: Processando webhook para Payment ID: %s", paymentID)
 
+	// Idempotency: Check if already processed
+	// First, try to get existing transaction by provider payment ID
+	existingTx, err := s.repo.GetByProviderPaymentID(paymentID)
+	if err != nil {
+		return fmt.Errorf("failed to check existing transaction: %w", err)
+	}
+
+	// Get payment status from MP (source of truth)
 	status, amount, externalRef, err := s.getPaymentStatus(ctx, paymentID)
 	if err != nil {
 		return fmt.Errorf("failed to verify payment with MP: %w", err)
@@ -289,51 +305,74 @@ func (s *DepositService) ProcessWebhook(ctx context.Context, paymentID string) e
 
 	log.Printf("Deposit Service: Webhook - Status: %s, Amount: %.2f, Ref: %s", status, amount, externalRef)
 
-	// Route by External Reference
-	// Case A: Direct Purchase (UUID without prefix)
-	if _, err := uuid.Parse(externalRef); err == nil {
-		log.Printf("Webhook: Identificada COMPRA DIRETA - Payment ID: %s", externalRef)
-		if status == "approved" {
-			if s.checkoutService == nil {
-				return fmt.Errorf("checkout service not initialized in deposit service")
-			}
-			return s.checkoutService.FinalizeDirectPurchase(ctx, externalRef, paymentID)
-		}
-		if status == "rejected" || status == "cancelled" {
-			return s.paymentRepo.UpdateStatus(ctx, nil, externalRef, models.PaymentStatusFailed, &paymentID)
-		}
-		return nil
-	}
-
-	// Case B: Wallet Deposit (has DEPOSIT_ prefix)
-	if len(externalRef) > 8 && externalRef[:8] == "DEPOSIT_" {
-		userIDStr := externalRef[8:]
+	// ROUTING: Check DEPOSIT_ prefix FIRST (before UUID parse)
+	// This prevents UUID collision since DEPOSIT_<uuid> is not a valid UUID format
+	if strings.HasPrefix(externalRef, "DEPOSIT_") {
+		// Case B: Wallet Deposit
+		userIDStr := strings.TrimPrefix(externalRef, "DEPOSIT_")
 		userID, err := uuid.Parse(userIDStr)
 		if err != nil {
 			return fmt.Errorf("invalid user ID in deposit reference: %w", err)
 		}
 
 		log.Printf("Webhook: Identificado DEPÓSITO EM CARTEIRA - User ID: %s, Provider ID: %s", userID, paymentID)
-		
-		// Get transaction by provider payment ID
-		tx, err := s.repo.GetByProviderPaymentID(paymentID)
-		if err != nil {
-			return fmt.Errorf("failed to get transaction: %w", err)
-		}
-		if tx == nil {
-			log.Printf("Webhook Warning: Transação não encontrada para ID %s", paymentID)
+
+		// If transaction already exists and is completed, skip (idempotency)
+		if existingTx != nil && existingTx.Status == models.TransactionStatusCompleted {
+			log.Printf("Webhook: Transação %s já completada, ignorando (idempotency)", existingTx.ID)
 			return nil
 		}
 
-		// CompleteDeposit already handles race condition with FOR UPDATE lock
+		// Get or create transaction
+		tx := existingTx
+		if tx == nil {
+			// Transaction not found, this shouldn't happen but handle gracefully
+			log.Printf("Webhook Warning: Transação não encontrada para Payment ID %s, criando nova", paymentID)
+			// Create a new transaction record
+			txID := uuid.New()
+			tx = &models.Transaction{
+				ID:                txID,
+				UserID:            userID,
+				ProviderPaymentID: &paymentID,
+				Amount:            amount,
+				Status:            models.TransactionStatusPending,
+				Type:              models.TransactionTypeDeposit,
+				CreatedAt:         time.Now(),
+				UpdatedAt:         time.Now(),
+			}
+			if err := s.repo.Create(tx); err != nil {
+				return fmt.Errorf("failed to create missing transaction: %w", err)
+			}
+		}
+
+		// Process based on status
 		if status == "approved" {
+			// CompleteDeposit uses FOR UPDATE lock internally (race condition safe)
 			if err := s.repo.CompleteDeposit(tx.ID.String(), amount); err != nil {
 				return fmt.Errorf("failed to complete deposit: %w", err)
 			}
+			log.Printf("Webhook: Depósito completado - Transaction ID: %s, Amount: %.2f", tx.ID, amount)
 		} else if status == "rejected" || status == "cancelled" {
 			if err := s.repo.UpdateStatus(tx.ID.String(), models.TransactionStatusRejected); err != nil {
 				return fmt.Errorf("failed to update transaction status: %w", err)
 			}
+			log.Printf("Webhook: Transação rejeitada/cancelada - Transaction ID: %s", tx.ID)
+		}
+		return nil
+	}
+
+	// Case A: Direct Purchase (UUID without prefix)
+	// Only reach here if NOT a DEPOSIT_ prefixed reference
+	if _, err := uuid.Parse(externalRef); err == nil {
+		log.Printf("Webhook: Identificada COMPRA DIRETA - Payment ID: %s", externalRef)
+		if s.checkoutGateway == nil {
+			return fmt.Errorf("checkout gateway not initialized in deposit service")
+		}
+		if status == "approved" {
+			return s.checkoutGateway.FinalizeDirectPurchase(ctx, externalRef, paymentID)
+		}
+		if status == "rejected" || status == "cancelled" {
+			return s.paymentRepo.UpdateStatus(ctx, nil, externalRef, models.PaymentStatusFailed, &paymentID)
 		}
 		return nil
 	}
