@@ -190,12 +190,15 @@ func (r *SupportRepository) ReleaseTicket(ctx context.Context, ticketID string) 
 
 // GetTicketStats returns ticket statistics for dashboard
 func (r *SupportRepository) GetTicketStats(ctx context.Context) (open, inProgress, resolved int, err error) {
+	// BT-042: Sincronizar contagem com a listagem (JOIN com users)
+	// Isso evita tickets "fantasmas" de usuários deletados ou inconsistentes.
 	query := `
 		SELECT 
-			COUNT(*) FILTER (WHERE status = 'OPEN'),
-			COUNT(*) FILTER (WHERE status = 'IN_PROGRESS'),
-			COUNT(*) FILTER (WHERE status = 'RESOLVED' AND resolved_at > NOW() - INTERVAL '7 days')
-		FROM support_tickets
+			COUNT(*) FILTER (WHERE t.status = 'OPEN'),
+			COUNT(*) FILTER (WHERE t.status = 'IN_PROGRESS'),
+			COUNT(*) FILTER (WHERE t.status = 'RESOLVED' AND t.resolved_at > NOW() - INTERVAL '7 days')
+		FROM support_tickets t
+		JOIN users u ON t.user_id = u.id
 	`
 	err = r.db.QueryRowContext(ctx, query).Scan(&open, &inProgress, &resolved)
 	return

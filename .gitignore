@@ -37,3 +37,6 @@ docsv3
 docsv4
 docsv5
 docsv6
+
+.gemini/
+gha-creds-*.json

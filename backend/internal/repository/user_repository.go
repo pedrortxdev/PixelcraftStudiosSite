@@ -172,6 +172,7 @@ func (r *UserRepository) UpdateUser(ctx context.Context, userID string, req *mod
 
 	_, err = r.db.ExecContext(ctx, query, args...)
 	if err != nil {
+		log.Printf("ERROR: Failed to update user %s: %v | Query: %s", userID, err, query)
 		return fmt.Errorf("failed to update user: %w", err)
 	}
 
@@ -366,12 +367,25 @@ func (r *UserRepository) UpdateUserAdmin(ctx context.Context, userID string, upd
 		return fmt.Errorf("invalid user ID format: %w", err)
 	}
 
+	// BT-042: Lista de campos permitidos na tabela users para evitar erros SQL
+	// com campos extras vindos do frontend (como highest_role, balance, etc)
+	allowedFields := map[string]bool{
+		"username": true, "email": true, "full_name": true, 
+		"discord_handle": true, "whatsapp_phone": true, 
+		"avatar_url": true, "is_admin": true, "cpf": true,
+	}
+
 	// Build dynamic update query
 	setClauses := []string{}
 	args := []interface{}{userID} // First argument is always userID
 	argIndex := 2
 
 	for key, value := range updates {
+		if !allowedFields[key] {
+			log.Printf("UpdateUserAdmin: Saltando campo inválido '%s'", key)
+			continue
+		}
+
 		if key == "cpf" {
 			setClauses = append(setClauses, fmt.Sprintf("cpf_encrypted = pgp_sym_encrypt($%d, current_setting('app.cpf_encryption_key'))", argIndex))
 		} else {
@@ -394,6 +408,7 @@ func (r *UserRepository) UpdateUserAdmin(ctx context.Context, userID string, upd
 
 	_, err = r.db.ExecContext(ctx, query, args...)
 	if err != nil {
+		log.Printf("ERROR Admin UpdateUser: %v | UserID: %s | Query: %s", err, userID, query)
 		return fmt.Errorf("failed to update user (admin): %w", err)
 	}
 

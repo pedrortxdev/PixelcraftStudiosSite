@@ -40,18 +40,41 @@ self.addEventListener('fetch', (event) => {
         return;
     }
 
+    // ESTRATÉGIA: Network-First para navegação (index.html)
+    // Isso garante que o usuário sempre pegue a versão mais recente do HTML
+    if (event.request.mode === 'navigate') {
+        event.respondWith(
+            fetch(event.request)
+                .then((response) => {
+                    // Opcional: Atualizar o cache com a nova versão
+                    const copy = response.clone();
+                    caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+                    return response;
+                })
+                .catch(() => {
+                    // Se estiver offline, tenta o cache
+                    return caches.match(event.request);
+                })
+        );
+        return;
+    }
+
+    // ESTRATÉGIA: Cache-First para outros recursos estáticos (JS, CSS, Imagens)
     event.respondWith(
         caches.match(event.request).then((response) => {
             if (response) return response;
 
-            return fetch(event.request).catch(() => {
-                // Se falhar a navegação (offline), mostra o index.html
-                if (event.request.mode === 'navigate') {
-                    return caches.match('/index.html');
-                }
-                // Para outros arquivos, apenas deixa falhar silenciosamente
-                return null;
-            });
+            return fetch(event.request).then((networkResponse) => {
+                // Não cachear respostas de erro ou de outros domínios aqui (já filtrado acima)
+                if (!networkResponse || networkResponse.status !== 200) return networkResponse;
+                
+                const responseToCache = networkResponse.clone();
+                caches.open(CACHE_NAME).then((cache) => {
+                    cache.put(event.request, responseToCache);
+                });
+
+                return networkResponse;
+            }).catch(() => null);
         })
     );
 });

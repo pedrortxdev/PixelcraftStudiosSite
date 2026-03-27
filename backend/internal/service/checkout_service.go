@@ -238,7 +238,7 @@ func (s *CheckoutService) ValidateDiscount(ctx context.Context, req *models.Vali
 			}, nil
 		}
 
-		discount, discountAmount, errMsg := s.validateDiscountInternal(ctx, req.Code, req.Amount, cartItems)
+		_, discountAmount, errMsg := s.validateDiscountInternal(ctx, req.Code, req.Amount, cartItems)
 		if errMsg != "" {
 			return &models.ValidateDiscountResponse{
 				IsValid: false,

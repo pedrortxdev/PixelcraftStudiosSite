@@ -42,7 +42,6 @@ const DashboardLayout = ({ children, title, headerStart }) => {
             minHeight: '100vh',
             background: 'linear-gradient(180deg, #0A0E1A 0%, #12182A 50%, #0A0E1A 100%)',
             position: 'relative',
-            overflow: 'hidden',
         },
         backgroundTexture: {
             position: 'absolute',
