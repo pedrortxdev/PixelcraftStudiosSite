@@ -74,7 +74,8 @@ func (r *LibraryRepository) UserOwnsProduct(ctx context.Context, userID uuid.UUI
 }
 
 // AddPurchase adds a product to the user's library within a transaction
-func (r *LibraryRepository) AddPurchase(ctx context.Context, tx *sql.Tx, userID, productID, paymentID uuid.UUID, price float64) error {
+// Price is in cents (int64) to avoid float precision issues
+func (r *LibraryRepository) AddPurchase(ctx context.Context, tx *sql.Tx, userID, productID, paymentID uuid.UUID, price int64) error {
 	query := `
 		INSERT INTO user_purchases (user_id, product_id, purchase_price, payment_id, purchased_at)
 		VALUES ($1, $2, $3, $4, NOW())

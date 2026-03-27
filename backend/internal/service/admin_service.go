@@ -8,7 +8,6 @@ import (
 	"github.com/pixelcraft/api/internal/models"
 	"github.com/pixelcraft/api/internal/repository"
 	"golang.org/x/crypto/bcrypt"
-	"math"
 	"time"
 )
 
@@ -24,7 +23,7 @@ type AdminService struct {
 
 type AdminUserDetail struct {
 	User          *models.User                         `json:"user"`
-	Balance       float64                              `json:"balance"`
+	Balance       int64                                `json:"balance"` // Balance in cents
 	Transactions  []models.Transaction                 `json:"transactions"`
 	Subscriptions []models.Subscription                `json:"subscriptions"`
 	Library       []models.UserPurchaseWithProduct     `json:"library"`
@@ -138,12 +137,14 @@ func (s *AdminService) GetUserDetail(ctx context.Context, userID string) (*Admin
 func (s *AdminService) UpdateUser(ctx context.Context, userID string, adminID string, updates map[string]interface{}) error {
 	// Check for balance change
 	var balanceChanged bool
-	var balanceDiff float64
-	var oldBal, newBal float64
+	var balanceDiff int64
+	var oldBal, newBal int64
 
 	if val, ok := updates["balance"]; ok {
-		newBalOK, ok := val.(float64)
+		// JSON numbers are float64, need to convert to int64
+		newBalFloat, ok := val.(float64)
 		if ok {
+			newBalOK := int64(newBalFloat)
 			user, err := s.userRepo.GetUserByID(ctx, userID)
 			if err == nil {
 				if user.Balance != newBalOK {
@@ -175,23 +176,29 @@ func (s *AdminService) UpdateUser(ctx context.Context, userID string, adminID st
 	if balanceChanged {
 		txID := uuid.New()
 		paymentID := fmt.Sprintf("admin-%s", adminID)
-		
+
+		// Use absolute value for amount (int64 abs)
+		absDiff := balanceDiff
+		if absDiff < 0 {
+			absDiff = -absDiff
+		}
+
 		tx := &models.Transaction{
 			ID:                txID,
 			UserID:            uuid.MustParse(userID),
 			ProviderPaymentID: &paymentID,
-			Amount:            math.Abs(balanceDiff), // Record absolute amount
+			Amount:            absDiff, // Record absolute amount
 			Status:            models.TransactionStatusCompleted,
 			Type:              models.TransactionTypeAdminAdjustment,
 			AdjustmentType:    adjType,
 			CreatedAt:         time.Now(),
 			UpdatedAt:         time.Now(),
 		}
-		
+
 		s.txRepo.Create(tx)
 
 		// Audit Log BT-012
-		s.repo.LogAction(ctx, adminID, "balance_update", fmt.Sprintf("User %s balance changed from %.2f to %.2f (diff: %.2f, type: %v)", userID, oldBal, newBal, balanceDiff, adjType))
+		s.repo.LogAction(ctx, adminID, "balance_update", fmt.Sprintf("User %s balance changed from %d to %d (diff: %d, type: %v)", userID, oldBal, newBal, balanceDiff, adjType))
 	}
 
 	return nil

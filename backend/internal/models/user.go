@@ -15,14 +15,14 @@ type User struct {
 	AvatarURL       string     `json:"avatar_url,omitempty"` // URL to profile picture
 	CPF             *string    `json:"cpf,omitempty"`        // Decrypted CPF (only sent to authorized admins)
 	CPFEncrypted    []byte     `json:"-"` // Never sent to client
-	Balance         float64    `json:"balance"` // New field for user balance
+	Balance         int64      `json:"balance"` // Balance in cents (e.g., 1000 = R$ 10.00)
 	ReferralCode    string     `json:"referral_code,omitempty"` // New field for referral code
 	ReferredByCode  string     `json:"-"` // Referral code used during registration (not sent to client)
 	IsAdmin         bool       `json:"is_admin"` // DEPRECATED - kept for backward compatibility
 	Roles           []RoleType `json:"roles,omitempty"` // User's active roles
 	HighestRole     *RoleType  `json:"highest_role,omitempty"` // Highest role for display
-	TotalSpent      float64    `json:"total_spent"` // Total spent on purchases
-	MonthlySpent    float64    `json:"monthly_spent"` // Spent this month
+	TotalSpent      int64      `json:"total_spent"` // Total spent on purchases (in cents)
+	MonthlySpent    int64      `json:"monthly_spent"` // Spent this month (in cents)
 	AssignedEmail   string     `json:"assigned_email,omitempty"` // Email assigned to support staff
 	Preferences     map[string]interface{} `json:"preferences,omitempty"` // User UI preferences
 	CreatedAt       time.Time  `json:"created_at"`

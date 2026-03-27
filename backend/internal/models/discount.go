@@ -25,11 +25,12 @@ const (
 )
 
 // Discount represents a coupon or referral code
+// Value is stored in cents (int64) for FIXED_AMOUNT to avoid float precision issues
 type Discount struct {
 	ID                uuid.UUID       `db:"id" json:"id"`
 	Code              string          `db:"code" json:"code"`
 	Type              DiscountType    `db:"type" json:"type"`
-	Value             float64         `db:"value" json:"value"`
+	Value             int64           `db:"value" json:"value"` // For FIXED_AMOUNT: cents; For PERCENTAGE: percentage points (e.g., 15 = 15%)
 	IsReferral        bool            `db:"is_referral" json:"is_referral"`
 	RestrictionType   RestrictionType `db:"restriction_type" json:"restriction_type"`
 	TargetIDs         []uuid.UUID     `db:"target_ids" json:"target_ids,omitempty"`
@@ -45,7 +46,7 @@ type Discount struct {
 type CreateDiscountRequest struct {
 	Code            string          `json:"code" binding:"required,min=3,max=50"`
 	Type            DiscountType    `json:"type" binding:"required"`
-	Value           float64         `json:"value" binding:"required,min=0"`
+	Value           int64           `json:"value" binding:"required,min=0"` // Cents for FIXED_AMOUNT, percentage points for PERCENTAGE
 	IsReferral      bool            `json:"is_referral"`
 	RestrictionType RestrictionType `json:"restriction_type" binding:"required"`
 	TargetIDs       []uuid.UUID     `json:"target_ids"`
@@ -57,7 +58,7 @@ type CreateDiscountRequest struct {
 type UpdateDiscountRequest struct {
 	Code            *string          `json:"code"`
 	Type            *DiscountType    `json:"type"`
-	Value           *float64         `json:"value"`
+	Value           *int64           `json:"value"`
 	RestrictionType *RestrictionType `json:"restriction_type"`
 	TargetIDs       []uuid.UUID      `json:"target_ids"`
 	IsActive        *bool            `json:"is_active"`
@@ -69,7 +70,7 @@ type UpdateDiscountRequest struct {
 type DiscountUpdate struct {
 	Code            *string
 	Type            *DiscountType
-	Value           *float64
+	Value           *int64
 	RestrictionType *RestrictionType
 	TargetIDs       []uuid.UUID
 	IsActive        *bool
@@ -78,16 +79,17 @@ type DiscountUpdate struct {
 }
 
 // ValidateDiscountRequest represents the request to validate a discount code
+// Amount is in cents (int64) to avoid float precision issues
 type ValidateDiscountRequest struct {
 	Code      string     `json:"code" binding:"required"`
-	Amount    float64    `json:"amount" binding:"required,min=0"`
+	Amount    int64      `json:"amount" binding:"required,min=0"` // Amount in cents
 	CartItems []CartItem `json:"cart_items"`
 }
 
 // ValidateDiscountResponse represents the response with discount calculation
 type ValidateDiscountResponse struct {
-	IsValid        bool    `json:"is_valid"`
-	DiscountAmount float64 `json:"discount_amount"`
-	FinalAmount    float64 `json:"final_amount"`
-	Message        string  `json:"message,omitempty"`
+	IsValid        bool   `json:"is_valid"`
+	DiscountAmount int64  `json:"discount_amount"` // Discount in cents
+	FinalAmount    int64  `json:"final_amount"`    // Final amount in cents
+	Message        string `json:"message,omitempty"`
 }

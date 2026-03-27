@@ -21,8 +21,9 @@ const (
 )
 
 // Commission Rates
+// ReferralCommissionRate is 5% (use: amount * ReferralCommissionRate / 100 for integer math)
 const (
-	ReferralCommissionRate = 0.05 // 5%
+	ReferralCommissionRate = 5 // 5% (divide by 100 when calculating)
 )
 
 // Product Types

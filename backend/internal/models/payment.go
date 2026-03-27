@@ -17,14 +17,15 @@ const (
 )
 
 // Payment represents a financial transaction
+// All monetary values are stored in cents (int64) to avoid float precision issues
 type Payment struct {
 	ID               uuid.UUID      `db:"id" json:"id"`
 	UserID           uuid.UUID      `db:"user_id" json:"user_id"`
 	SubscriptionID   *uuid.UUID     `db:"subscription_id" json:"subscription_id,omitempty"`
 	Description      string         `db:"description" json:"description"`
-	Amount           float64        `db:"amount" json:"amount"`
-	DiscountApplied  float64        `db:"discount_applied" json:"discount_applied"`
-	FinalAmount      float64        `db:"final_amount" json:"final_amount"`
+	Amount           int64          `db:"amount" json:"amount"` // Amount in cents
+	DiscountApplied  int64          `db:"discount_applied" json:"discount_applied"` // Discount in cents
+	FinalAmount      int64          `db:"final_amount" json:"final_amount"` // Final amount in cents
 	Status           PaymentStatus  `db:"status" json:"status"`
 	IsTest           bool           `db:"is_test" json:"is_test"`
 	PaymentGatewayID *string        `db:"payment_gateway_id" json:"payment_gateway_id,omitempty"`
@@ -50,12 +51,13 @@ type CheckoutRequest struct {
 }
 
 // CheckoutResponse represents the response after checkout
+// All monetary values are in cents (int64) to avoid float precision issues
 type CheckoutResponse struct {
-	Success          bool       `json:"success"`
-	PaymentID        uuid.UUID  `json:"payment_id"`
-	FinalAmount      float64    `json:"final_amount"`
-	DiscountApplied  float64    `json:"discount_applied"`
-	Message          string     `json:"message"`
+	Success          bool      `json:"success"`
+	PaymentID        uuid.UUID `json:"payment_id"`
+	FinalAmount      int64     `json:"final_amount"` // Final amount in cents
+	DiscountApplied  int64     `json:"discount_applied"` // Discount in cents
+	Message          string    `json:"message"`
 	// For gateway payments
 	PaymentGatewayURL *string   `json:"payment_gateway_url,omitempty"`
 	PaymentIntentID   *string   `json:"payment_intent_id,omitempty"`

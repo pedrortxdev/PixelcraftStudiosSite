@@ -2,36 +2,36 @@ package models
 
 // PaymentStats represents payment statistics for a user
 type PaymentStats struct {
-	TotalSpent          float64 `json:"total_spent"`
-	ProductsPurchased   int     `json:"products_purchased"`
-	ActiveSubscriptions int     `json:"active_subscriptions"`
+	TotalSpent          int64 `json:"total_spent"` // Total in cents
+	ProductsPurchased   int   `json:"products_purchased"`
+	ActiveSubscriptions int   `json:"active_subscriptions"`
 }
 
 // PaymentInfo represents payment information for dashboard
 type PaymentInfo struct {
-	ID          string  `json:"id"`
-	Description string  `json:"description"`
-	Amount      float64 `json:"amount"`
-	Status      string  `json:"status"`
-	CreatedAt   string  `json:"created_at"`
+	ID          string `json:"id"`
+	Description string `json:"description"`
+	Amount      int64  `json:"amount"` // Amount in cents
+	Status      string `json:"status"`
+	CreatedAt   string `json:"created_at"`
 }
 
 // MonthlySpend represents monthly spending data
 type MonthlySpend struct {
-	Month  string  `json:"month"`
-	Amount float64 `json:"amount"`
+	Month  string `json:"month"`
+	Amount int64  `json:"amount"` // Amount in cents
 }
 
 // NextBillingSummary represents aggregate of upcoming billing for subscriptions
 type NextBillingSummary struct {
-	Total  float64  `json:"total_next_billing"`
+	Total  int64    `json:"total_next_billing"` // Total in cents
 	Dates  []string `json:"next_billing_dates"`
 }
 
 // DashboardStats represents dashboard statistics
 type DashboardStats struct {
-	Balance             float64            `json:"balance"`
-	TotalSpent          float64            `json:"total_spent"`
+	Balance             int64              `json:"balance"` // Balance in cents
+	TotalSpent          int64              `json:"total_spent"` // Total in cents
 	ProductsPurchased   int                `json:"products_purchased"`
 	ActiveSubscriptions int                `json:"active_subscriptions"`
 	RecentPayments      []PaymentInfo      `json:"recent_payments"`

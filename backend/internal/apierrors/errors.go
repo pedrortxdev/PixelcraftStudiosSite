@@ -71,6 +71,14 @@ var (
 	ErrInvalidPaginationPage  = errors.New("invalid pagination page")
 )
 
+// Payment Service Errors
+var (
+	ErrInvalidPaymentLimit       = errors.New("invalid payment limit")
+	ErrInvalidPaymentMonths      = errors.New("invalid payment months parameter")
+	ErrPaymentLimitExceeded      = errors.New("payment limit exceeded maximum allowed")
+	ErrPaymentMonthsExceeded     = errors.New("payment months exceeded maximum allowed")
+)
+
 // APIError details the standard JSON response format (BT-029)
 type APIError struct {
 	Error   string `json:"error"`
@@ -191,6 +199,20 @@ func Convert(err error) APIError {
 	}
 	if errors.Is(err, ErrInvalidPaginationPage) {
 		return APIError{Error: err.Error(), Code: "ERR_INVALID_PAGINATION_PAGE"}
+	}
+
+	// Payment Service Errors
+	if errors.Is(err, ErrInvalidPaymentLimit) {
+		return APIError{Error: err.Error(), Code: "ERR_INVALID_PAYMENT_LIMIT"}
+	}
+	if errors.Is(err, ErrInvalidPaymentMonths) {
+		return APIError{Error: err.Error(), Code: "ERR_INVALID_PAYMENT_MONTHS"}
+	}
+	if errors.Is(err, ErrPaymentLimitExceeded) {
+		return APIError{Error: err.Error(), Code: "ERR_PAYMENT_LIMIT_EXCEEDED"}
+	}
+	if errors.Is(err, ErrPaymentMonthsExceeded) {
+		return APIError{Error: err.Error(), Code: "ERR_PAYMENT_MONTHS_EXCEEDED"}
 	}
 
 	// Strict Fallback masking detailed Go/SQL panics in production logic (BT-030)

@@ -3,84 +3,159 @@ package service
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/pixelcraft/api/internal/models"
 	"github.com/pixelcraft/api/internal/repository"
 )
 
 // PartnerService handles partner profit distribution
 type PartnerService struct {
-	roleRepo *repository.RoleRepository
-	db       *sql.DB
+	roleRepo        *repository.RoleRepository
+	transactionRepo *repository.TransactionRepository
+	db              *sql.DB
 }
 
 // NewPartnerService creates a new partner service
-func NewPartnerService(roleRepo *repository.RoleRepository, db *sql.DB) *PartnerService {
+func NewPartnerService(roleRepo *repository.RoleRepository, transactionRepo *repository.TransactionRepository, db *sql.DB) *PartnerService {
 	return &PartnerService{
-		roleRepo: roleRepo,
-		db:       db,
+		roleRepo:        roleRepo,
+		transactionRepo: transactionRepo,
+		db:              db,
 	}
 }
 
-// DistributePartnerProfits distributes 1% of a sale to all partners
+// DistributePartnerProfits distributes 1% of a sale to all eligible partners
 // This is called after any successful purchase
-func (s *PartnerService) DistributePartnerProfits(ctx context.Context, saleAmount float64, excludeUserID string) error {
-	// Calculate 1% of the sale
-	partnerShare := saleAmount * 0.01
-	
-	if partnerShare <= 0 {
+//
+// Business Rules:
+// - 1% of sale amount is distributed among partners
+// - Buyer is excluded from distribution (cannot earn commission on own purchase)
+// - Minimum distribution: 1 cent (if share < 1 cent, NO partners receive anything)
+// - All updates are atomic: either all partners receive, or none do (rollback on failure)
+// - Each credit creates a transaction record for audit trail
+//
+// NOTE: All amounts are in CENTS (int64) to avoid float precision issues
+func (s *PartnerService) DistributePartnerProfits(ctx context.Context, saleAmountCents int64, excludeUserID string) error {
+	// Calculate 1% of the sale (total commission pool in cents)
+	// Using integer division: 1% = divide by 100
+	partnerShareCents := saleAmountCents / 100
+
+	if partnerShareCents <= 0 {
 		return nil
 	}
-	
+
 	// Get all partners
 	partnerIDs, err := s.roleRepo.GetPartnerUserIDs(ctx)
 	if err != nil {
 		log.Printf("Error getting partner IDs: %v", err)
-		return err
+		return fmt.Errorf("failed to get partner IDs: %w", err)
 	}
-	
+
 	if len(partnerIDs) == 0 {
 		return nil
 	}
-	
-	// Calculate share per partner
-	sharePerPartner := partnerShare / float64(len(partnerIDs))
-	
-	if sharePerPartner < 0.01 {
-		// Don't distribute if share is less than 1 cent
+
+	// Filter out the buyer from the partner list BEFORE calculating shares
+	// This ensures correct math: we divide by actual recipients, not total partners
+	eligiblePartners := make([]string, 0, len(partnerIDs))
+	for _, pid := range partnerIDs {
+		if pid != excludeUserID {
+			eligiblePartners = append(eligiblePartners, pid)
+		}
+	}
+
+	// If buyer was the only partner, nothing to distribute
+	if len(eligiblePartners) == 0 {
+		log.Printf("No eligible partners for distribution (buyer was the only partner)")
 		return nil
 	}
-	
-	// Distribute to each partner
-	for _, partnerID := range partnerIDs {
-		// Skip the buyer themselves if they are a partner
-		if partnerID == excludeUserID {
-			continue
-		}
-		
-		// Add to partner's balance
-		if err := s.addToBalance(ctx, partnerID, sharePerPartner); err != nil {
-			log.Printf("Error adding partner share to user %s: %v", partnerID, err)
-			// Continue with other partners even if one fails
-			continue
-		}
-		
-		// Log the distribution
-		log.Printf("Partner %s received R$%.2f from sale of R$%.2f", partnerID, sharePerPartner, saleAmount)
-		
-		// TODO: Create a transaction record for the partner share
-		// This could be done by creating a transaction entry in the transactions table
-	}
-	
-	return nil
-}
 
-// addToBalance adds an amount to a user's balance
-func (s *PartnerService) addToBalance(ctx context.Context, userID string, amount float64) error {
-	query := `UPDATE users SET balance = balance + $2 WHERE id = $1`
-	_, err := s.db.ExecContext(ctx, query, userID, amount)
-	return err
+	// Calculate share per partner using INTEGER division (floor division)
+	// This automatically rounds DOWN to avoid precision issues
+	sharePerPartnerCents := partnerShareCents / int64(len(eligiblePartners))
+
+	// MINIMUM DISTRIBUTION RULE:
+	// If share per partner is less than 1 cent, NO partners receive anything.
+	// This prevents micro-dust amounts and database pollution.
+	if sharePerPartnerCents < 1 {
+		log.Printf("Skipping distribution: share per partner (%d cents) is below minimum threshold", sharePerPartnerCents)
+		return nil
+	}
+
+	// Start a database transaction for atomic updates
+	// Either ALL partners receive their share, or NONE do (rollback on any failure)
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback() // Rollback if commit fails or we return early
+
+	// Track total distributed for logging (in cents)
+	totalDistributedCents := int64(0)
+
+	// Distribute to each eligible partner WITH transaction record
+	for _, partnerID := range eligiblePartners {
+		// Parse partner UUID for transaction record
+		partnerUUID, err := uuid.Parse(partnerID)
+		if err != nil {
+			return fmt.Errorf("invalid partner UUID %s: %w", partnerID, err)
+		}
+
+		// 1. Create transaction record FIRST (audit trail)
+		now := time.Now()
+		transaction := &models.Transaction{
+			ID:             uuid.New(),
+			UserID:         partnerUUID,
+			Amount:         sharePerPartnerCents,
+			Status:         models.TransactionStatusCompleted,
+			Type:           models.TransactionTypePartnerShare,
+			AdjustmentType: nil, // Not an adjustment, it's a partner share
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		}
+
+		// Insert transaction record
+		insertQuery := `
+			INSERT INTO transactions (id, user_id, amount, status, type, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)
+		`
+		_, err = tx.ExecContext(ctx, insertQuery,
+			transaction.ID,
+			transaction.UserID,
+			transaction.Amount,
+			transaction.Status,
+			transaction.Type,
+			transaction.CreatedAt,
+			transaction.UpdatedAt,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create transaction record for partner %s: %w", partnerID, err)
+		}
+
+		// 2. Update user balance (atomic within same transaction)
+		balanceQuery := `UPDATE users SET balance = balance + $1 WHERE id = $2`
+		_, err = tx.ExecContext(ctx, balanceQuery, sharePerPartnerCents, partnerID)
+		if err != nil {
+			return fmt.Errorf("failed to update balance for partner %s: %w", partnerID, err)
+		}
+
+		totalDistributedCents += sharePerPartnerCents
+		log.Printf("Partner %s received %d cents from sale of %d cents", partnerID, sharePerPartnerCents, saleAmountCents)
+	}
+
+	// Commit the transaction: all partners receive or none do
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	log.Printf("Partner profit distribution completed: %d cents distributed to %d partners from sale of %d cents",
+		totalDistributedCents, len(eligiblePartners), saleAmountCents)
+
+	return nil
 }
 
 // GetPartners returns all users with the PARTNER role
@@ -88,11 +163,24 @@ func (s *PartnerService) GetPartners(ctx context.Context) ([]string, error) {
 	return s.roleRepo.GetUsersWithRole(ctx, models.RolePartner)
 }
 
-// GetPartnerEarnings returns total earnings for a partner (would need transaction tracking)
-// For now, this is a placeholder that would query the transactions table
-func (s *PartnerService) GetPartnerEarnings(ctx context.Context, partnerID string) (float64, error) {
-	// TODO: Implement when transaction tracking for partner shares is added
-	// This would query something like:
-	// SELECT SUM(amount) FROM transactions WHERE user_id = $1 AND type = 'PARTNER_SHARE'
-	return 0, nil
+// GetPartnerEarnings returns total earnings for a partner from transaction records (in cents)
+func (s *PartnerService) GetPartnerEarnings(ctx context.Context, partnerID string) (int64, error) {
+	partnerUUID, err := uuid.Parse(partnerID)
+	if err != nil {
+		return 0, fmt.Errorf("invalid partner UUID: %w", err)
+	}
+
+	query := `
+		SELECT COALESCE(SUM(amount), 0)
+		FROM transactions
+		WHERE user_id = $1 AND type = $2 AND status = $3
+	`
+
+	var total int64
+	err = s.db.QueryRowContext(ctx, query, partnerUUID, models.TransactionTypePartnerShare, models.TransactionStatusCompleted).Scan(&total)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get partner earnings: %w", err)
+	}
+
+	return total, nil
 }

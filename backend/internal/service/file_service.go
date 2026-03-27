@@ -59,6 +59,27 @@ func NewFileService(db *sql.DB, uploadDir string, maxFileSize int64, allowedType
 	}
 }
 
+// GenerateDownloadToken generates a secure one-time download token for a file
+// The token expires after 1 hour and can be used once
+func (s *FileService) GenerateDownloadToken(ctx context.Context, fileID uuid.UUID) (string, error) {
+	// Generate a random token
+	token := uuid.New()
+
+	// Store token in database with expiration
+	query := `
+		INSERT INTO download_tokens (id, file_id, expires_at, max_downloads, current_downloads)
+		VALUES ($1, $2, NOW() + INTERVAL '1 hour', 1, 0)
+		ON CONFLICT (id) DO UPDATE
+		SET file_id = $2, expires_at = NOW() + INTERVAL '1 hour', current_downloads = 0
+	`
+	_, err := s.db.ExecContext(ctx, query, token, fileID)
+	if err != nil {
+		return "", fmt.Errorf("failed to create download token: %w", err)
+	}
+
+	return token.String(), nil
+}
+
 // GetDB returns the database connection (used for raw queries in handlers)
 func (s *FileService) GetDB() *sql.DB {
 	return s.db

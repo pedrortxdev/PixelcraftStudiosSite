@@ -16,11 +16,12 @@ const (
 )
 
 // Plan represents a subscription plan available for purchase
+// Price is stored in cents (int64) to avoid float precision issues
 type Plan struct {
 	ID          uuid.UUID `json:"id"`
 	Name        string    `json:"name"`
 	Description string    `json:"description"`
-	Price       float64   `json:"price"`
+	Price       int64     `json:"price"` // Price in cents (e.g., 1000 = R$ 10.00)
 	ImageURL    *string   `json:"imageUrl,omitempty"`
 	IsActive    bool      `json:"isActive"`
 	Features    []string  `json:"features,omitempty"` // Array of strings
@@ -29,13 +30,14 @@ type Plan struct {
 }
 
 // Subscription represents a user's subscription/project
+// All monetary values are stored in cents (int64) to avoid float precision issues
 type Subscription struct {
 	ID              uuid.UUID          `json:"id"`
 	UserID          uuid.UUID          `json:"userId"`
 	PlanID          *uuid.UUID         `json:"planId"`
 	PlanName        string             `json:"planName"`      // Kept for backward compatibility
-	PricePerMonth   float64            `json:"pricePerMonth"` // Current plan price
-	AgreedPrice     *float64           `json:"agreedPrice"`   // Price at purchase time
+	PricePerMonth   int64              `json:"pricePerMonth"` // Current plan price in cents
+	AgreedPrice     *int64             `json:"agreedPrice"`   // Price at purchase time in cents
 	Status          SubscriptionStatus `json:"status"`
 	ProjectStage    string             `json:"projectStage"` // e.g., 'Planejamento', 'Desenvolvimento'
 	StartedAt       time.Time          `json:"startedAt"`
@@ -75,13 +77,14 @@ type AddProjectLogRequest struct {
 }
 
 // ActiveSubscriptionDTO represents the data for the active subscriptions list
+// Price is stored in cents (int64) to avoid float precision issues
 type ActiveSubscriptionDTO struct {
 	ID              string  `json:"id"`
 	UserID          string  `json:"userId"`
 	UserName        string  `json:"userName"`
 	UserEmail       string  `json:"userEmail"`
 	PlanName        string  `json:"planName"`
-	Price           float64 `json:"price"`
+	Price           int64   `json:"price"` // Price in cents
 	Status          string  `json:"status"`
 	ProjectStage    string  `json:"projectStage"`
 	NextBillingDate string  `json:"nextBillingDate"`

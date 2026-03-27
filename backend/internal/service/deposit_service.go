@@ -84,9 +84,9 @@ type MPPreferenceResponse struct {
 
 // MPBalanceResponse represents the balance response from Mercado Pago
 type MPBalanceResponse struct {
-	TotalAmount       float64 `json:"total_amount"`
-	AvailableAmount   float64 `json:"available_amount"`
-	UnavailableAmount float64 `json:"unavailable_amount"`
+	TotalAmount       int64 `json:"total_amount"` // Amount in cents
+	AvailableAmount   int64 `json:"available_amount"` // Amount in cents
+	UnavailableAmount int64 `json:"unavailable_amount"` // Amount in cents
 }
 
 // CreateDeposit initiates a deposit
@@ -149,8 +149,8 @@ func (s *DepositService) CreateDeposit(ctx context.Context, userID uuid.UUID, re
 	return &resp, nil
 }
 
-func (s *DepositService) createPixPayment(ctx context.Context, userID uuid.UUID, amount float64) (*MPPaymentResponse, error) {
-	log.Printf("Deposit Service: Chamando API do Mercado Pago para criar pagamento PIX - User ID: %s, Amount: %.2f", userID, amount)
+func (s *DepositService) createPixPayment(ctx context.Context, userID uuid.UUID, amountCents int64) (*MPPaymentResponse, error) {
+	log.Printf("Deposit Service: Chamando API do Mercado Pago para criar pagamento PIX - User ID: %s, Amount: %d cents", userID, amountCents)
 
 	url := "https://api.mercadopago.com/v1/payments"
 
@@ -167,7 +167,7 @@ func (s *DepositService) createPixPayment(ctx context.Context, userID uuid.UUID,
 	}
 
 	payload := map[string]interface{}{
-		"transaction_amount": amount,
+		"transaction_amount": amountCents,
 		"payment_method_id":  "pix",
 		"payer": map[string]interface{}{
 			"email":      payerEmail,
@@ -222,8 +222,8 @@ func (s *DepositService) createPixPayment(ctx context.Context, userID uuid.UUID,
 	return &mpResp, nil
 }
 
-func (s *DepositService) CreatePreference(ctx context.Context, userID uuid.UUID, amount float64, externalRef string) (*MPPreferenceResponse, error) {
-	log.Printf("Deposit Service: Chamando API do Mercado Pago para criar preferência de pagamento - User ID: %s, Amount: %.2f, Ref: %s", userID, amount, externalRef)
+func (s *DepositService) CreatePreference(ctx context.Context, userID uuid.UUID, amountCents int64, externalRef string) (*MPPreferenceResponse, error) {
+	log.Printf("Deposit Service: Chamando API do Mercado Pago para criar preferência de pagamento - User ID: %s, Amount: %d cents, Ref: %s", userID, amountCents, externalRef)
 
 	url := "https://api.mercadopago.com/checkout/preferences"
 
@@ -233,7 +233,7 @@ func (s *DepositService) CreatePreference(ctx context.Context, userID uuid.UUID,
 				"title":       "Pixelcraft Studio - Deposito",
 				"quantity":    1,
 				"currency_id": "BRL",
-				"unit_price":  amount,
+				"unit_price":  amountCents,
 			},
 		},
 		"external_reference": externalRef,
@@ -382,7 +382,7 @@ func (s *DepositService) ProcessWebhook(ctx context.Context, paymentID string) e
 	return nil
 }
 
-func (s *DepositService) getPaymentStatus(ctx context.Context, id string) (status string, amount float64, externalRef string, err error) {
+func (s *DepositService) getPaymentStatus(ctx context.Context, id string) (status string, amountCents int64, externalRef string, err error) {
 	url := fmt.Sprintf("https://api.mercadopago.com/v1/payments/%s", id)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -407,9 +407,9 @@ func (s *DepositService) getPaymentStatus(ctx context.Context, id string) (statu
 	}
 
 	var payload struct {
-		Status            string  `json:"status"`
-		TransactionAmount float64 `json:"transaction_amount"`
-		ExternalReference string  `json:"external_reference"`
+		Status            string `json:"status"`
+		TransactionAmount int64  `json:"transaction_amount"` // Amount in cents
+		ExternalReference string `json:"external_reference"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return "", 0, "", err

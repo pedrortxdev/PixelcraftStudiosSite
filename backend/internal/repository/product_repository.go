@@ -4,11 +4,28 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-
-	"github.com/pixelcraft/api/internal/models"
+	"strings"
 
 	"github.com/google/uuid"
+	"github.com/pixelcraft/api/internal/models"
 )
+
+// UpdateProductRequestPartial represents a partial update request
+// Only non-nil fields will be updated to prevent race conditions
+type UpdateProductRequestPartial struct {
+	Name                 *string
+	Description          *string
+	Price                *int64
+	Type                 *models.ProductType
+	GameID               *uuid.UUID
+	CategoryID           *uuid.UUID
+	DownloadURLEncrypted *[]byte // Encrypted URL
+	FileID               *uuid.UUID
+	IsExclusive          *bool
+	StockQuantity        *int
+	ImageURL             *string
+	IsActive             *bool
+}
 
 // ProductRepository handles all database operations for products
 type ProductRepository struct {
@@ -175,6 +192,100 @@ func (r *ProductRepository) Update(ctx context.Context, id uuid.UUID, product *m
 		return fmt.Errorf("failed to update product: %w", err)
 	}
 	
+	return nil
+}
+
+// UpdatePartial updates only the fields that are non-nil in the request
+// This prevents race conditions where concurrent updates overwrite each other
+func (r *ProductRepository) UpdatePartial(ctx context.Context, id uuid.UUID, req *UpdateProductRequestPartial) error {
+	// Build dynamic SET clause with only provided fields
+	setClauses := []string{"updated_at = NOW()"}
+	var args []interface{}
+	argIndex := 2 // Start at $2 since $1 is the ID
+
+	if req.Name != nil {
+		setClauses = append(setClauses, fmt.Sprintf("name = $%d", argIndex))
+		args = append(args, *req.Name)
+		argIndex++
+	}
+	if req.Description != nil {
+		setClauses = append(setClauses, fmt.Sprintf("description = $%d", argIndex))
+		args = append(args, *req.Description)
+		argIndex++
+	}
+	if req.Price != nil {
+		setClauses = append(setClauses, fmt.Sprintf("price = $%d", argIndex))
+		args = append(args, *req.Price)
+		argIndex++
+	}
+	if req.Type != nil {
+		setClauses = append(setClauses, fmt.Sprintf("type = $%d", argIndex))
+		args = append(args, *req.Type)
+		argIndex++
+	}
+	if req.GameID != nil {
+		setClauses = append(setClauses, fmt.Sprintf("game_id = $%d", argIndex))
+		args = append(args, *req.GameID)
+		argIndex++
+	}
+	if req.CategoryID != nil {
+		setClauses = append(setClauses, fmt.Sprintf("category_id = $%d", argIndex))
+		args = append(args, *req.CategoryID)
+		argIndex++
+	}
+	if req.DownloadURLEncrypted != nil {
+		setClauses = append(setClauses, fmt.Sprintf("download_url_encrypted = $%d", argIndex))
+		args = append(args, *req.DownloadURLEncrypted)
+		argIndex++
+	}
+	if req.FileID != nil {
+		setClauses = append(setClauses, fmt.Sprintf("file_id = $%d", argIndex))
+		args = append(args, *req.FileID)
+		argIndex++
+	}
+	if req.IsExclusive != nil {
+		setClauses = append(setClauses, fmt.Sprintf("is_exclusive = $%d", argIndex))
+		args = append(args, *req.IsExclusive)
+		argIndex++
+	}
+	if req.StockQuantity != nil {
+		setClauses = append(setClauses, fmt.Sprintf("stock_quantity = $%d", argIndex))
+		args = append(args, *req.StockQuantity)
+		argIndex++
+	}
+	if req.ImageURL != nil {
+		setClauses = append(setClauses, fmt.Sprintf("image_url = $%d", argIndex))
+		args = append(args, *req.ImageURL)
+		argIndex++
+	}
+	if req.IsActive != nil {
+		setClauses = append(setClauses, fmt.Sprintf("is_active = $%d", argIndex))
+		args = append(args, *req.IsActive)
+		argIndex++
+	}
+
+	query := fmt.Sprintf(`
+		UPDATE products
+		SET %s
+		WHERE id = $1
+	`, strings.Join(setClauses, ", "))
+
+	args = append([]interface{}{id}, args...)
+
+	result, err := r.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to update product: %w", err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get affected rows: %w", err)
+	}
+
+	if rows == 0 {
+		return fmt.Errorf("product not found")
+	}
+
 	return nil
 }
 

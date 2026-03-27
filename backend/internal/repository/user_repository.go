@@ -179,11 +179,11 @@ func (r *UserRepository) UpdateUser(ctx context.Context, userID string, req *mod
 	return nil
 }
 
-// GetBalance retrieves the balance for a user
-func (r *UserRepository) GetBalance(ctx context.Context, userID string) (float64, error) {
+// GetBalance retrieves the balance for a user (in cents)
+func (r *UserRepository) GetBalance(ctx context.Context, userID string) (int64, error) {
 	query := `SELECT balance FROM users WHERE id = $1`
 
-	var balance float64
+	var balance int64
 	err := r.db.QueryRowContext(ctx, query, userID).Scan(&balance)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get user balance: %w", err)
@@ -192,11 +192,11 @@ func (r *UserRepository) GetBalance(ctx context.Context, userID string) (float64
 	return balance, nil
 }
 
-// GetBalanceTx retrieves the balance for a user within a transaction with row-level lock
-func (r *UserRepository) GetBalanceTx(ctx context.Context, tx *sql.Tx, userID string) (float64, error) {
+// GetBalanceTx retrieves the balance for a user within a transaction with row-level lock (in cents)
+func (r *UserRepository) GetBalanceTx(ctx context.Context, tx *sql.Tx, userID string) (int64, error) {
 	query := `SELECT balance FROM users WHERE id = $1 FOR UPDATE`
 
-	var balance float64
+	var balance int64
 	var execTx interface {
 		QueryRowContext(context.Context, string, ...interface{}) *sql.Row
 	}
@@ -213,43 +213,43 @@ func (r *UserRepository) GetBalanceTx(ctx context.Context, tx *sql.Tx, userID st
 	return balance, nil
 }
 
-// UpdateBalance updates the balance for a user within a transaction
-func (r *UserRepository) UpdateBalance(ctx context.Context, tx *sql.Tx, userID string, newBalance float64) error {
+// UpdateBalance updates the balance for a user within a transaction (balance in cents)
+func (r *UserRepository) UpdateBalance(ctx context.Context, tx *sql.Tx, userID string, newBalance int64) error {
 	query := `UPDATE users SET balance = $1 WHERE id = $2`
-	
+
 	// Use the transaction if provided, otherwise use the main database connection
 	var execTx interface {
 		ExecContext(context.Context, string, ...interface{}) (sql.Result, error)
 	}
-	
+
 	if tx != nil {
 		execTx = tx
 	} else {
 		execTx = r.db
 	}
-	
+
 	_, err := execTx.ExecContext(ctx, query, newBalance, userID)
 	if err != nil {
 		return fmt.Errorf("failed to update user balance: %w", err)
 	}
-	
+
 	return nil
 }
 
-// IncrementBalance atomically adds (or subtracts) an amount from the user's balance
-func (r *UserRepository) IncrementBalance(ctx context.Context, tx *sql.Tx, userID string, amount float64) error {
+// IncrementBalance atomically adds (or subtracts) an amount from the user's balance (amount in cents)
+func (r *UserRepository) IncrementBalance(ctx context.Context, tx *sql.Tx, userID string, amount int64) error {
 	query := `UPDATE users SET balance = balance + $1 WHERE id = $2`
-	
+
 	var execTx interface {
 		ExecContext(context.Context, string, ...interface{}) (sql.Result, error)
 	}
-	
+
 	if tx != nil {
 		execTx = tx
 	} else {
 		execTx = r.db
 	}
-	
+
 	_, err := execTx.ExecContext(ctx, query, amount, userID)
 	if err != nil {
 		return fmt.Errorf("failed to increment user balance: %w", err)
@@ -323,7 +323,7 @@ func (r *UserRepository) GetUserByEmail(ctx context.Context, email string) (*mod
 
 	var user models.UserWithPassword
 	var fullName, referralCode, username, discordHandle, whatsappPhone, avatarUrl sql.NullString
-	var balance float64
+	var balance int64
 	var isAdmin bool
 	var createdAt, updatedAt time.Time
 	var hashedPassword []byte

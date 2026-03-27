@@ -241,9 +241,9 @@ func (r *PaymentRepository) GetMonthlySpending(ctx context.Context, userID uuid.
 }
 
 // GetNextBillingSummary returns total next billing amount and list of dates for active subscriptions
-func (r *PaymentRepository) GetNextBillingSummary(ctx context.Context, userID uuid.UUID) (float64, []string, error) {
+func (r *PaymentRepository) GetNextBillingSummary(ctx context.Context, userID uuid.UUID) (int64, []string, error) {
 	// Sum of price_per_month for active subscriptions
-	var total float64
+	var total int64
 	if err := r.db.QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(price_per_month), 0)
 		FROM subscriptions

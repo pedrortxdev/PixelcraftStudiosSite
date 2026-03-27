@@ -148,7 +148,8 @@ func (s *DiscountService) DeleteDiscount(ctx context.Context, id uuid.UUID) erro
 }
 
 // validateDiscountValue validates discount value based on type
-func validateDiscountValue(discountType models.DiscountType, value float64) error {
+// Value is in cents for FIXED_AMOUNT, or percentage points for PERCENTAGE
+func validateDiscountValue(discountType models.DiscountType, value int64) error {
 	// Check for negative values
 	if value < 0 {
 		return apierrors.ErrDiscountNegativeValue

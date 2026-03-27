@@ -81,7 +81,7 @@ func main() {
 	}
 	fileService := service.NewFileService(db.DB, "./uploads", 500*1024*1024, allowedTypes) // 500MB max
 	productService := service.NewProductService(db.DB, cfg, fileService)
-	paymentService := service.NewPaymentService(db.DB)
+	paymentService := service.NewPaymentService(paymentRepo) // Dependency injection (interface-based)
 	// Initialize Mercado Pago Auth Service
 	mpAuthService := service.NewMercadoPagoAuthService(cfg.MercadoPago)
 	depositService := service.NewDepositService(

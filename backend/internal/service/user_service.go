@@ -39,10 +39,10 @@ func (s *UserService) UpdateProfile(ctx context.Context, userID string, req *mod
 	return nil
 }
 
-func (s *UserService) GetBalance(ctx context.Context, userID string) (float64, error) {
+func (s *UserService) GetBalance(ctx context.Context, userID string) (int64, error) {
 	return s.repo.GetBalance(ctx, userID)
 }
 
-func (s *UserService) UpdateBalance(ctx context.Context, tx *sql.Tx, userID string, newBalance float64) error {
+func (s *UserService) UpdateBalance(ctx context.Context, tx *sql.Tx, userID string, newBalance int64) error {
 	return s.repo.UpdateBalance(ctx, tx, userID, newBalance)
 }

@@ -65,7 +65,7 @@ func (s *CheckoutService) ProcessCheckout(ctx context.Context, userID uuid.UUID,
 	}
 
 	// 2. Validate and apply discount
-	var discountAmount float64
+	var discountAmount int64
 	var discount *models.Discount
 	if req.CouponCode != nil && *req.CouponCode != "" {
 		discount, discountAmount, err = s.validateAndApplyDiscount(ctx, *req.CouponCode, totalAmount, cartItems)
@@ -312,11 +312,13 @@ func (s *CheckoutService) fulfillItems(ctx context.Context, tx *sql.Tx, userID u
 	return nil
 }
 
-func (s *CheckoutService) handleReferral(ctx context.Context, tx *sql.Tx, userID uuid.UUID, code string, amount float64) {
+func (s *CheckoutService) handleReferral(ctx context.Context, tx *sql.Tx, userID uuid.UUID, code string, amountCents int64) {
 	referrerID, err := s.userRepo.GetUserByReferralCode(ctx, code)
 	if err == nil && referrerID != nil && *referrerID != userID.String() {
-		commission := amount * models.ReferralCommissionRate
-		s.userRepo.IncrementBalance(ctx, tx, *referrerID, commission)
+		// ReferralCommissionRate is 5 (meaning 5%)
+		// Calculate: amountCents * 5 / 100 = commission in cents
+		commissionCents := amountCents * models.ReferralCommissionRate / 100
+		s.userRepo.IncrementBalance(ctx, tx, *referrerID, commissionCents)
 	}
 }
 
@@ -381,10 +383,12 @@ func (s *CheckoutService) ValidateDiscount(ctx context.Context, req *models.Vali
 		}, nil
 	}
 
-	var discountAmount float64
+	var discountAmount int64
 	switch discount.Type {
 	case models.DiscountTypePercentage:
-		discountAmount = req.Amount * (discount.Value / 100)
+		// For percentage: discount.Value is percentage points (e.g., 15 = 15%)
+		// Calculate: req.Amount * value / 100 (integer division)
+		discountAmount = req.Amount * discount.Value / 100
 	case models.DiscountTypeFixedAmount:
 		discountAmount = discount.Value
 	default:
@@ -403,17 +407,18 @@ func (s *CheckoutService) ValidateDiscount(ctx context.Context, req *models.Vali
 }
 
 // Internal struct to hold validated item details
+// All prices are in cents (int64) to avoid float precision issues
 type validatedCartItem struct {
 	ProductID uuid.UUID
 	Quantity  int
-	Price     float64
+	Price     int64
 	Name      string
 	IsPlan    bool
 }
 
-// validateCart validates all products/plans in the cart and calculates the total
-func (s *CheckoutService) validateCart(ctx context.Context, cart []models.CartItem) (float64, []validatedCartItem, error) {
-	var total float64
+// validateCart validates all products/plans in the cart and calculates the total (in cents)
+func (s *CheckoutService) validateCart(ctx context.Context, cart []models.CartItem) (int64, []validatedCartItem, error) {
+	var total int64
 	var validatedItems []validatedCartItem
 
 	for _, item := range cart {
@@ -427,7 +432,7 @@ func (s *CheckoutService) validateCart(ctx context.Context, cart []models.CartIt
 			if item.Quantity <= 0 {
 				return 0, nil, fmt.Errorf("invalid quantity for product %s: %w", item.ProductID, apierrors.ErrInvalidInput)
 			}
-			total += product.Price * float64(item.Quantity)
+			total += product.Price * int64(item.Quantity)
 			validatedItems = append(validatedItems, validatedCartItem{
 				ProductID: item.ProductID,
 				Quantity:  item.Quantity,
@@ -465,7 +470,7 @@ func (s *CheckoutService) validateCart(ctx context.Context, cart []models.CartIt
 	return total, validatedItems, nil
 }
 
-func (s *CheckoutService) validateAndApplyDiscount(ctx context.Context, code string, amount float64, cartItems []validatedCartItem) (*models.Discount, float64, error) {
+func (s *CheckoutService) validateAndApplyDiscount(ctx context.Context, code string, amount int64, cartItems []validatedCartItem) (*models.Discount, int64, error) {
 	discount, discountAmount, err := s.validateDiscountInternal(ctx, code, amount, cartItems)
 	if err != nil {
 		return nil, 0, err
@@ -473,7 +478,7 @@ func (s *CheckoutService) validateAndApplyDiscount(ctx context.Context, code str
 	return discount, discountAmount, nil
 }
 
-func (s *CheckoutService) validateDiscountInternal(ctx context.Context, code string, amount float64, cartItems []validatedCartItem) (*models.Discount, float64, error) {
+func (s *CheckoutService) validateDiscountInternal(ctx context.Context, code string, amount int64, cartItems []validatedCartItem) (*models.Discount, int64, error) {
 	discount, err := s.discountRepo.GetByCode(ctx, code)
 	if err != nil || discount == nil {
 		return nil, 0, apierrors.ErrInvalidDiscount
@@ -493,10 +498,12 @@ func (s *CheckoutService) validateDiscountInternal(ctx context.Context, code str
 		// Logic omitted for brevity, keeping existing behavior
 	}
 
-	var discountAmount float64
+	var discountAmount int64
 	switch discount.Type {
 	case models.DiscountTypePercentage:
-		discountAmount = amount * (discount.Value / 100)
+		// For percentage: discount.Value is percentage points (e.g., 15 = 15%)
+		// Calculate: amount * value / 100 (integer division)
+		discountAmount = amount * discount.Value / 100
 	case models.DiscountTypeFixedAmount:
 		discountAmount = discount.Value
 	default:

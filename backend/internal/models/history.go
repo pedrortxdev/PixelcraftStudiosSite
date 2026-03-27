@@ -9,7 +9,7 @@ import (
 type SubscriptionMini struct {
 	ID            uuid.UUID `json:"id"`
 	PlanName      string    `json:"plan_name"`
-	PricePerMonth float64   `json:"price_per_month"`
+	PricePerMonth int64     `json:"price_per_month"` // Price in cents
 	CreatedAt     time.Time `json:"created_at"`
 }
 
@@ -17,7 +17,7 @@ type SubscriptionMini struct {
 type ProductMini struct {
 	ID    uuid.UUID `json:"id"`
 	Name  string    `json:"name"`
-	Price float64   `json:"price"`
+	Price int64     `json:"price"` // Price in cents
 	Type  ProductType `json:"type"`
 }
 
@@ -30,7 +30,7 @@ type HistoryResponse struct {
 // Invoice representa uma fatura simplificada
 type Invoice struct {
 	ID     uuid.UUID `json:"id"`
-	Amount float64   `json:"amount"`
+	Amount int64     `json:"amount"` // Amount in cents
 	Date   time.Time `json:"date"`
 }
 
@@ -38,7 +38,7 @@ type Invoice struct {
 type SubscriptionInvoice struct {
 	SubscriptionID uuid.UUID   `json:"subscription_id"`
 	PlanName       string      `json:"plan_name"`
-	Amount         float64     `json:"amount"`
+	Amount         int64       `json:"amount"` // Amount in cents
 	DueDate        time.Time   `json:"due_date"`
 	Status         InvoiceStatus `json:"status"` // e.g., "paid", "due", "overdue"
 }

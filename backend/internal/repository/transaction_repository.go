@@ -115,7 +115,8 @@ func (r *TransactionRepository) UpdateStatus(id string, status models.Transactio
 }
 
 // CompleteDeposit updates the transaction status to completed and increments the user's balance transactionally
-func (r *TransactionRepository) CompleteDeposit(transactionID string, amount float64) error {
+// Amount is in cents (int64) to avoid float precision issues
+func (r *TransactionRepository) CompleteDeposit(transactionID string, amount int64) error {
 	// Start a transaction
 	tx, err := r.db.Beginx()
 	if err != nil {
@@ -144,11 +145,11 @@ func (r *TransactionRepository) CompleteDeposit(transactionID string, amount flo
 
 	// 2. Update User Balance
 	queryUser := `
-		UPDATE users 
-		SET balance = balance + $1, updated_at = NOW() 
+		UPDATE users
+		SET balance = balance + $1, updated_at = NOW()
 		WHERE id = (SELECT user_id FROM transactions WHERE id = $2)
 	`
-	
+
 	result, err := tx.Exec(queryUser, amount, transactionID)
 	if err != nil {
 		return fmt.Errorf("failed to update user balance: %w", err)
@@ -171,7 +172,8 @@ func (r *TransactionRepository) CompleteDeposit(transactionID string, amount flo
 }
 
 // RefundDeposit updates the transaction status to refunded and decrements the user's balance transactionally
-func (r *TransactionRepository) RefundDeposit(transactionID string, amount float64) error {
+// Amount is in cents (int64) to avoid float precision issues
+func (r *TransactionRepository) RefundDeposit(transactionID string, amount int64) error {
 	// Start a transaction
 	tx, err := r.db.Beginx()
 	if err != nil {
@@ -201,11 +203,11 @@ func (r *TransactionRepository) RefundDeposit(transactionID string, amount float
 	// 2. Decrement User Balance
 	// Allow negative balance if chargeback occurs
 	queryUser := `
-		UPDATE users 
-		SET balance = balance - $1, updated_at = NOW() 
+		UPDATE users
+		SET balance = balance - $1, updated_at = NOW()
 		WHERE id = (SELECT user_id FROM transactions WHERE id = $2)
 	`
-	
+
 	result, err := tx.Exec(queryUser, amount, transactionID)
 	if err != nil {
 		return fmt.Errorf("failed to decrement user balance: %w", err)

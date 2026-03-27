@@ -18,11 +18,12 @@ const (
 )
 
 // Product represents a digital product in the store
+// Price is stored in cents (int64) to avoid float precision issues
 type Product struct {
 	ID                    uuid.UUID   `db:"id" json:"id"`
 	Name                  string      `db:"name" json:"name"`
 	Description           *string     `db:"description" json:"description,omitempty"`
-	Price                 float64     `db:"price" json:"price"`
+	Price                 int64       `db:"price" json:"price"` // Price in cents (e.g., 1000 = R$ 10.00)
 	Type                  ProductType `db:"type" json:"type"`
 	GameID                *uuid.UUID  `db:"game_id" json:"game_id,omitempty"`
 	CategoryID            *uuid.UUID  `db:"category_id" json:"category_id,omitempty"`
@@ -41,7 +42,7 @@ type UserPurchase struct {
 	ID            uuid.UUID `db:"id" json:"id"`
 	UserID        uuid.UUID `db:"user_id" json:"user_id"`
 	ProductID     uuid.UUID `db:"product_id" json:"product_id"`
-	PurchasePrice float64   `db:"purchase_price" json:"purchase_price"`
+	PurchasePrice int64     `db:"purchase_price" json:"purchase_price"` // Price in cents
 	PurchasedAt   time.Time `db:"purchased_at" json:"purchased_at"`
 }
 
@@ -55,7 +56,7 @@ type UserPurchaseWithProduct struct {
 type CreateProductRequest struct {
 	Name             string      `json:"name" binding:"required"`
 	Description      *string     `json:"description"`
-	Price            *float64    `json:"price" binding:"required,min=0"`
+	Price            *int64      `json:"price" binding:"required,min=0"` // Price in cents
 	Type             ProductType `json:"type" binding:"required"`
 	GameID           *uuid.UUID  `json:"game_id"`
 	CategoryID       *uuid.UUID  `json:"category_id"`
@@ -70,7 +71,7 @@ type CreateProductRequest struct {
 type UpdateProductRequest struct {
 	Name          *string      `json:"name"`
 	Description   *string      `json:"description"`
-	Price         *float64     `json:"price" binding:"omitempty,min=0"`
+	Price         *int64       `json:"price" binding:"omitempty,min=0"` // Price in cents
 	Type          *ProductType `json:"type"`
 	GameID        *uuid.UUID   `json:"game_id"`
 	CategoryID    *uuid.UUID   `json:"category_id"`
