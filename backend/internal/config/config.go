@@ -26,6 +26,10 @@ type MercadoPagoConfig struct {
 	WebhookSecret string
 	ClientID      string
 	ClientSecret  string
+	// Deposit callback URLs
+	DepositSuccessURL string
+	DepositFailureURL string
+	DepositPendingURL string
 }
 
 // DatabaseConfig holds database connection settings
@@ -109,11 +113,14 @@ func Load() (*Config, error) {
 		CPFEncryptionKey:  getRequired("CPF_ENCRYPTION_KEY"),
 		FileEncryptionKey: getRequired("FILE_ENCRYPTION_KEY"),
 		MercadoPago: MercadoPagoConfig{
-			AccessToken:   getOptional("MP_ACCESS_TOKEN", ""),
-			WebhookURL:    getOptional("MP_WEBHOOK_URL", ""),
-			WebhookSecret: getOptional("MP_WEBHOOK_SECRET", ""),
-			ClientID:      getRequired("MP_CLIENT_ID"),
-			ClientSecret:  getRequired("MP_CLIENT_SECRET"),
+			AccessToken:       getOptional("MP_ACCESS_TOKEN", ""),
+			WebhookURL:        getOptional("MP_WEBHOOK_URL", ""),
+			WebhookSecret:     getOptional("MP_WEBHOOK_SECRET", ""),
+			ClientID:          getRequired("MP_CLIENT_ID"),
+			ClientSecret:      getRequired("MP_CLIENT_SECRET"),
+			DepositSuccessURL: getOptional("MP_DEPOSIT_SUCCESS_URL", "https://pixelcraft-studio.store/dashboard?deposit=success"),
+			DepositFailureURL: getOptional("MP_DEPOSIT_FAILURE_URL", "https://pixelcraft-studio.store/dashboard?deposit=failure"),
+			DepositPendingURL: getOptional("MP_DEPOSIT_PENDING_URL", "https://pixelcraft-studio.store/dashboard?deposit=pending"),
 		},
 	}
 

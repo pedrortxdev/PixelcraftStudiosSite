@@ -39,7 +39,7 @@ func (h *EmailManagementHandler) SendEmail(c *gin.Context) {
 	}
 
 	// Enviar email
-	if err := h.emailService.SendEmail(req.To, req.Subject, req.Body); err != nil {
+	if err := h.emailService.SendEmail(c.Request.Context(), req.To, req.Subject, req.Body); err != nil {
 		// Registrar falha no log
 		h.permService.LogEmail(&models.EmailLog{
 			FromEmail:    h.emailService.GetFromEmail(),
@@ -127,7 +127,7 @@ func (h *EmailManagementHandler) ResendEmail(c *gin.Context) {
 	}
 
 	// Reenviar
-	if err := h.emailService.SendEmail(originalLog.ToEmail, originalLog.Subject, originalLog.Body); err != nil {
+	if err := h.emailService.SendEmail(c.Request.Context(), originalLog.ToEmail, originalLog.Subject, originalLog.Body); err != nil {
 		// Registrar falha
 		h.permService.LogEmail(&models.EmailLog{
 			FromEmail:    h.emailService.GetFromEmail(),

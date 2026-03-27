@@ -60,7 +60,7 @@ func (h *DepositHandler) Deposit(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.service.CreateDeposit(userID, req)
+	resp, err := h.service.CreateDeposit(c.Request.Context(), userID, req)
 	if err != nil {
 		log.Printf("Deposit Error: Falha ao criar depósito - %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create deposit"})
@@ -178,7 +178,7 @@ func (h *DepositHandler) Webhook(c *gin.Context) {
 	log.Printf("Webhook: Verificando transação ID %s no banco...", paymentID)
 
 	// Process in background or foreground? Foreground is fine for now, MP retries if timeout.
-	if err := h.service.ProcessWebhook(paymentID); err != nil {
+	if err := h.service.ProcessWebhook(c.Request.Context(), paymentID); err != nil {
 		log.Printf("Webhook Error: Falha ao processar webhook para Payment ID %s - %v", paymentID, err)
 		// Log error but probably still return 200 to MP to stop retries if it's a non-recoverable logic error?
 		// Or return 500 to force retry?

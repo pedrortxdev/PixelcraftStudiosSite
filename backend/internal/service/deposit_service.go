@@ -22,7 +22,15 @@ type DepositService struct {
 	checkoutService *CheckoutService
 	authService     *MercadoPagoAuthService
 	webhookURL      string
+	depositURLs     DepositURLs
 	client          *http.Client
+}
+
+// DepositURLs holds configurable deposit callback URLs
+type DepositURLs struct {
+	Success string
+	Failure string
+	Pending string
 }
 
 func NewDepositService(
@@ -31,6 +39,7 @@ func NewDepositService(
 	paymentRepo *repository.PaymentRepository,
 	authService *MercadoPagoAuthService,
 	webhookURL string,
+	depositURLs DepositURLs,
 ) *DepositService {
 	return &DepositService{
 		repo:        repo,
@@ -38,6 +47,7 @@ func NewDepositService(
 		paymentRepo: paymentRepo,
 		authService: authService,
 		webhookURL:  webhookURL,
+		depositURLs: depositURLs,
 		client:      &http.Client{Timeout: 10 * time.Second},
 	}
 }
@@ -138,10 +148,15 @@ func (s *DepositService) createPixPayment(ctx context.Context, userID uuid.UUID,
 
 	url := "https://api.mercadopago.com/v1/payments"
 
-	payerEmail := fmt.Sprintf("user%s@pixelcraft-studio.store", userID.String()[:8])
+	// Try to get user's real email first
+	payerEmail := ""
 	user, err := s.userRepo.GetUserByID(ctx, userID.String())
 	if err == nil && user != nil && user.Email != "" {
 		payerEmail = user.Email
+	} else {
+		// Fallback: Use a generic email that MP accepts for PIX
+		// PIX doesn't require email validation, so this is safe
+		payerEmail = fmt.Sprintf("deposit-%s@noreply.mercadopago.com", userID.String()[:8])
 	}
 
 	payload := map[string]interface{}{
@@ -149,10 +164,10 @@ func (s *DepositService) createPixPayment(ctx context.Context, userID uuid.UUID,
 		"payment_method_id":  "pix",
 		"payer": map[string]interface{}{
 			"email":      payerEmail,
-			"first_name": "PIX",
-			"last_name":  "Customer",
+			"first_name": "Cliente",
+			"last_name":  "PIX",
 		},
-		"description":           "Add Funds - Pixelcraft Studio",
+		"description":           "Deposito em Carteira - Pixelcraft Studio",
 		"external_reference":    fmt.Sprintf("DEPOSIT_%s", userID.String()),
 		"installments":          1,
 		"statement_descriptor":  "PIXELCRAFT STUDIO",
@@ -216,9 +231,9 @@ func (s *DepositService) CreatePreference(ctx context.Context, userID uuid.UUID,
 		},
 		"external_reference": externalRef,
 		"back_urls": map[string]string{
-			"success":   "https://pixelcraft-studio.store/dashboard?deposit=success",
-			"failure":   "https://pixelcraft-studio.store/dashboard?deposit=failure",
-			"pending":   "https://pixelcraft-studio.store/dashboard?deposit=pending",
+			"success":   s.depositURLs.Success,
+			"failure":   s.depositURLs.Failure,
+			"pending":   s.depositURLs.Pending,
 		},
 		"auto_return": "approved",
 	}

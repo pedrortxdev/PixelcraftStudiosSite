@@ -1,14 +1,20 @@
 package service
 
 import (
+	"bytes"
+	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
+	"html/template"
 	"log"
 	"net"
 	"net/smtp"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,13 +27,22 @@ type EmailConfig struct {
 	From     string
 }
 
-// EmailService handles sending emails via SMTP
-type EmailService struct {
-	config EmailConfig
-	db     *sql.DB
+// ConfigCache holds cached SMTP config with TTL
+type ConfigCache struct {
+	config    EmailConfig
+	expiresAt time.Time
+	mu        sync.RWMutex
 }
 
-// NewEmailService creates a new EmailService with optional DB connection
+// EmailService handles sending emails via SMTP
+type EmailService struct {
+	config      EmailConfig
+	db          *sql.DB
+	configCache *ConfigCache
+	pool        *SMTPPool
+}
+
+// NewEmailService creates a new EmailService with connection pooling
 func NewEmailService(db *sql.DB) *EmailService {
 	// Default config from env - AWS SES configuration
 	config := EmailConfig{
@@ -37,16 +52,27 @@ func NewEmailService(db *sql.DB) *EmailService {
 		Password: os.Getenv("SMTP_PASSWORD"),
 		From:     getEnv("SMTP_FROM", "noreply@pixelcraft-studio.store"),
 	}
-	
+
 	// Validate required credentials at startup
 	if config.Username == "" || config.Password == "" {
 		log.Printf("⚠️  WARNING: SMTP credentials not configured. Email sending will fail.")
 		log.Printf("⚠️  Please set SMTP_USERNAME and SMTP_PASSWORD environment variables.")
 	}
-	
+
+	// Initialize config cache
+	cache := &ConfigCache{
+		config:    config,
+		expiresAt: time.Now().Add(5 * time.Minute), // Cache for 5 minutes
+	}
+
+	// Initialize SMTP connection pool
+	pool := NewSMTPPool(config, 5) // Pool of 5 connections
+
 	return &EmailService{
-		config: config,
-		db:     db,
+		config:      config,
+		db:          db,
+		configCache: cache,
+		pool:        pool,
 	}
 }
 
@@ -56,18 +82,42 @@ func (s *EmailService) GetFromEmail() string {
 	return config.From
 }
 
-// loadConfig loads configuration from DB if available, falling back to cached/env config
+// loadConfig loads configuration from DB with caching
 func (s *EmailService) loadConfig() EmailConfig {
+	// Check cache first (fast path)
+	s.configCache.mu.RLock()
+	if time.Now().Before(s.configCache.expiresAt) {
+		config := s.configCache.config
+		s.configCache.mu.RUnlock()
+		return config
+	}
+	s.configCache.mu.RUnlock()
+
+	// Cache miss or expired - acquire write lock
+	s.configCache.mu.Lock()
+	defer s.configCache.mu.Unlock()
+
+	// Double-check after acquiring lock
+	if time.Now().Before(s.configCache.expiresAt) {
+		return s.configCache.config
+	}
+
+	// Load from DB if available
 	if s.db == nil {
+		s.configCache.expiresAt = time.Now().Add(5 * time.Minute)
 		return s.config
 	}
 
 	config := s.config // Start with defaults
 
-	// Query settings
-	rows, err := s.db.Query("SELECT key, value FROM system_settings WHERE key LIKE 'smtp_%'")
+	// Query settings with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	rows, err := s.db.QueryContext(ctx, "SELECT key, value FROM system_settings WHERE key LIKE 'smtp_%'")
 	if err != nil {
 		log.Printf("Warning: Failed to load system settings: %v", err)
+		s.configCache.expiresAt = time.Now().Add(1 * time.Minute) // Retry sooner on error
 		return config
 	}
 	defer rows.Close()
@@ -80,139 +130,52 @@ func (s *EmailService) loadConfig() EmailConfig {
 		}
 	}
 
-	// Override with DB values if allowed (only if they are not empty)
-	if v, ok := settings["smtp_host"]; ok && v != "" { config.Host = v }
-	if v, ok := settings["smtp_port"]; ok && v != "" { config.Port = v }
-	if v, ok := settings["smtp_email"]; ok && v != "" { config.Username = v } // smtp_email maps to Username
-	if v, ok := settings["smtp_password"]; ok && v != "" { config.Password = v }
-	if v, ok := settings["smtp_from"]; ok && v != "" { config.From = v }
+	// Override with DB values if they are not empty
+	if v, ok := settings["smtp_host"]; ok && v != "" {
+		config.Host = v
+	}
+	if v, ok := settings["smtp_port"]; ok && v != "" {
+		config.Port = v
+	}
+	if v, ok := settings["smtp_email"]; ok && v != "" {
+		config.Username = v
+	}
+	if v, ok := settings["smtp_password"]; ok && v != "" {
+		config.Password = v
+	}
+	if v, ok := settings["smtp_from"]; ok && v != "" {
+		config.From = v
+	}
+
+	// Update cache
+	s.configCache.config = config
+	s.configCache.expiresAt = time.Now().Add(5 * time.Minute)
 
 	return config
 }
 
 // SendEmail sends an email to the specified recipient
-func (s *EmailService) SendEmail(to, subject, body string) error {
-	return s.SendEmailHTML(to, subject, body, "")
+func (s *EmailService) SendEmail(ctx context.Context, to, subject, body string) error {
+	return s.SendEmailHTML(ctx, to, subject, body, "")
 }
 
 // SendEmailHTML sends an HTML email with optional plain text fallback
-func (s *EmailService) SendEmailHTML(to, subject, htmlBody, textBody string) error {
+func (s *EmailService) SendEmailHTML(ctx context.Context, to, subject, htmlBody, textBody string) error {
 	config := s.loadConfig()
 	addr := fmt.Sprintf("%s:%s", config.Host, config.Port)
 
 	log.Printf("📧 Attempting to send email to %s via %s", to, addr)
-	// SECURITY: Do not log credentials
-	log.Printf("📧 SMTP Config: Host=%s, Port=%s, From=%s", config.Host, config.Port, config.From)
 
-	// Build message with proper headers
+	// Build message with proper headers and unique boundary
 	msg := s.buildMessage(to, subject, htmlBody, textBody, config)
 
-	// Auth
-	auth := smtp.PlainAuth("", config.Username, config.Password, config.Host)
-
-	// TLS config - SECURE: Proper certificate validation enabled
-	tlsConfig := &tls.Config{
-		ServerName: config.Host,
-		MinVersion: tls.VersionTLS12,
-		// InsecureSkipVerify removed - certificates are now properly validated
-	}
-
-	// Connect with timeout
-	log.Println("📧 Dialing SMTP server...")
-	
-	// AWS SES uses port 25 with STARTTLS
-	if config.Port == "25" || config.Port == "587" {
-		return s.sendWithSTARTTLS(addr, auth, to, msg, config)
-	}
-
-	dialer := &net.Dialer{Timeout: 5 * time.Second}
-	conn, err := tls.DialWithDialer(dialer, "tcp", addr, tlsConfig)
+	// Get connection from pool
+	client, _, err := s.pool.Get(ctx)
 	if err != nil {
-		log.Printf("📧 Implicit TLS connection failed, falling back to STARTTLS: %v", err)
-		// Fallback to STARTTLS
-		return s.sendWithSTARTTLS(addr, auth, to, msg, config)
+		log.Printf("📧 Failed to get connection from pool: %v", err)
+		return fmt.Errorf("failed to get SMTP connection: %w", err)
 	}
-	defer conn.Close()
-
-	client, err := smtp.NewClient(conn, config.Host)
-	if err != nil {
-		return fmt.Errorf("failed to create SMTP client: %w", err)
-	}
-	defer client.Close()
-
-	// Auth
-	if err := client.Auth(auth); err != nil {
-		log.Printf("❌ SMTP authentication failed for host %s", config.Host)
-		return fmt.Errorf("SMTP authentication failed - please verify credentials")
-	}
-
-	// Set sender
-	if err := client.Mail(config.From); err != nil {
-		return fmt.Errorf("SMTP MAIL FROM failed: %w", err)
-	}
-
-	// Set recipient
-	if err := client.Rcpt(to); err != nil {
-		log.Printf("❌ Invalid recipient address: %s", to)
-		return fmt.Errorf("invalid recipient email address")
-	}
-
-	// Send body
-	w, err := client.Data()
-	if err != nil {
-		return fmt.Errorf("SMTP DATA failed: %w", err)
-	}
-
-	_, err = w.Write(msg)
-	if err != nil {
-		return fmt.Errorf("failed to write email body: %w", err)
-	}
-
-	err = w.Close()
-	if err != nil {
-		return fmt.Errorf("failed to close email writer: %w", err)
-	}
-
-	log.Printf("✅ Email sent successfully to %s", to)
-	return client.Quit()
-}
-
-// sendWithSTARTTLS sends email using STARTTLS
-func (s *EmailService) sendWithSTARTTLS(addr string, auth smtp.Auth, to string, msg []byte, config EmailConfig) error {
-	log.Printf("📧 Starting STARTTLS flow to %s", addr)
-	// Connect with timeout
-	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
-	if err != nil {
-		log.Printf("❌ Failed to connect to SMTP server %s: %v", addr, err)
-		return fmt.Errorf("failed to connect to SMTP server - check network connectivity")
-	}
-	
-	host, _, _ := net.SplitHostPort(addr)
-	client, err := smtp.NewClient(conn, host)
-	if err != nil {
-		conn.Close()
-		return fmt.Errorf("failed to create SMTP client: %w", err)
-	}
-	defer client.Close()
-
-	// STARTTLS - SECURE: Proper certificate validation enabled
-	log.Println("📧 Sending STARTTLS command...")
-	tlsConfig := &tls.Config{
-		ServerName: config.Host,
-		MinVersion: tls.VersionTLS12,
-		// InsecureSkipVerify removed - certificates are now properly validated
-	}
-	if err := client.StartTLS(tlsConfig); err != nil {
-		log.Printf("❌ STARTTLS failed: %v", err)
-		return fmt.Errorf("STARTTLS failed - TLS handshake error")
-	}
-
-	// Auth
-	log.Println("📧 Authenticating...")
-	if err := client.Auth(auth); err != nil {
-		log.Printf("❌ SMTP authentication failed")
-		return fmt.Errorf("SMTP authentication failed - please verify credentials")
-	}
+	defer s.pool.Put(client) // Return to pool
 
 	// Set sender
 	if err := client.Mail(config.From); err != nil {
@@ -238,6 +201,7 @@ func (s *EmailService) sendWithSTARTTLS(addr string, auth smtp.Auth, to string, 
 
 	_, err = w.Write(msg)
 	if err != nil {
+		w.Close()
 		return fmt.Errorf("failed to write email body: %w", err)
 	}
 
@@ -246,41 +210,41 @@ func (s *EmailService) sendWithSTARTTLS(addr string, auth smtp.Auth, to string, 
 		return fmt.Errorf("failed to close email writer: %w", err)
 	}
 
-	log.Printf("✅ Email sent successfully to %s via STARTTLS", to)
+	log.Printf("✅ Email sent successfully to %s", to)
 	return client.Quit()
 }
 
-// buildMessage builds the email message with headers
+// buildMessage builds the email message with unique boundary
 func (s *EmailService) buildMessage(to, subject, htmlBody, textBody string, config EmailConfig) []byte {
-	var msg strings.Builder
+	var msg bytes.Buffer
 
 	// Headers
-	msg.WriteString(fmt.Sprintf("From: %s\r\n", config.From))
-	msg.WriteString(fmt.Sprintf("To: %s\r\n", to))
-	msg.WriteString(fmt.Sprintf("Subject: %s\r\n", subject))
+	fmt.Fprintf(&msg, "From: %s\r\n", config.From)
+	fmt.Fprintf(&msg, "To: %s\r\n", to)
+	fmt.Fprintf(&msg, "Subject: %s\r\n", subject)
 	msg.WriteString("MIME-Version: 1.0\r\n")
 
 	if htmlBody != "" && textBody != "" {
-		// Multipart message
-		boundary := "PixelcraftBoundary"
-		msg.WriteString(fmt.Sprintf("Content-Type: multipart/alternative; boundary=\"%s\"\r\n", boundary))
+		// Multipart message with UNIQUE boundary (crypto-random)
+		boundary := generateUniqueBoundary()
+		fmt.Fprintf(&msg, "Content-Type: multipart/alternative; boundary=\"%s\"\r\n", boundary)
 		msg.WriteString("\r\n")
 
 		// Plain text part
-		msg.WriteString(fmt.Sprintf("--%s\r\n", boundary))
+		fmt.Fprintf(&msg, "--%s\r\n", boundary)
 		msg.WriteString("Content-Type: text/plain; charset=UTF-8\r\n")
 		msg.WriteString("\r\n")
 		msg.WriteString(textBody)
 		msg.WriteString("\r\n")
 
 		// HTML part
-		msg.WriteString(fmt.Sprintf("--%s\r\n", boundary))
+		fmt.Fprintf(&msg, "--%s\r\n", boundary)
 		msg.WriteString("Content-Type: text/html; charset=UTF-8\r\n")
 		msg.WriteString("\r\n")
 		msg.WriteString(htmlBody)
 		msg.WriteString("\r\n")
 
-		msg.WriteString(fmt.Sprintf("--%s--\r\n", boundary))
+		fmt.Fprintf(&msg, "--%s--\r\n", boundary)
 	} else if htmlBody != "" {
 		msg.WriteString("Content-Type: text/html; charset=UTF-8\r\n")
 		msg.WriteString("\r\n")
@@ -291,13 +255,25 @@ func (s *EmailService) buildMessage(to, subject, htmlBody, textBody string, conf
 		msg.WriteString(textBody)
 	}
 
-	return []byte(msg.String())
+	return msg.Bytes()
+}
+
+// generateUniqueBoundary generates a cryptographically secure unique boundary
+func generateUniqueBoundary() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to timestamp-based (should never happen)
+		return fmt.Sprintf("Boundary_%d", time.Now().UnixNano())
+	}
+	return "Pixelcraft_" + hex.EncodeToString(b)
 }
 
 // SendWelcomeEmail sends a welcome email to a new user
-func (s *EmailService) SendWelcomeEmail(to, username string) error {
+func (s *EmailService) SendWelcomeEmail(ctx context.Context, to, username string) error {
 	subject := "Bem-vindo à Pixelcraft Studio! 🎮"
-	html := fmt.Sprintf(`
+	
+	// Use html/template to escape any dangerous content
+	tmpl := template.Must(template.New("welcome").Parse(`
 <!DOCTYPE html>
 <html>
 <head>
@@ -306,7 +282,7 @@ func (s *EmailService) SendWelcomeEmail(to, username string) error {
         .container { max-width: 600px; margin: 0 auto; padding: 40px; }
         .header { text-align: center; margin-bottom: 30px; }
         .logo { font-size: 28px; font-weight: bold; color: #8b5cf6; }
-        .content { background: linear-gradient(135deg, #1a1a2e 0%%, #16213e 100%%); padding: 30px; border-radius: 12px; }
+        .content { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); padding: 30px; border-radius: 12px; }
         .button { display: inline-block; background: linear-gradient(135deg, #8b5cf6, #06b6d4); color: white; padding: 14px 28px; text-decoration: none; border-radius: 8px; margin-top: 20px; }
     </style>
 </head>
@@ -316,7 +292,7 @@ func (s *EmailService) SendWelcomeEmail(to, username string) error {
             <div class="logo">🎮 Pixelcraft Studio</div>
         </div>
         <div class="content">
-            <h2>Olá, %s! 👋</h2>
+            <h2>Olá, {{.Username}}! 👋</h2>
             <p>Seja bem-vindo à Pixelcraft Studio! Estamos muito felizes em ter você conosco.</p>
             <p>Aqui você encontra os melhores jogos e experiências gaming.</p>
             <a href="https://pixelcraft-studio.store" class="button">Explorar Loja</a>
@@ -324,23 +300,24 @@ func (s *EmailService) SendWelcomeEmail(to, username string) error {
     </div>
 </body>
 </html>
-`, username)
+`))
+
+	var htmlBuf bytes.Buffer
+	if err := tmpl.Execute(&htmlBuf, map[string]string{"Username": username}); err != nil {
+		return fmt.Errorf("failed to render email template: %w", err)
+	}
 
 	text := fmt.Sprintf("Olá, %s! Bem-vindo à Pixelcraft Studio! Acesse: https://pixelcraft-studio.store", username)
 
-	return s.SendEmailHTML(to, subject, html, text)
+	return s.SendEmailHTML(ctx, to, subject, htmlBuf.String(), text)
 }
 
 // SendOrderConfirmation sends an order confirmation email
-func (s *EmailService) SendOrderConfirmation(to, orderID string, total float64, items []string) error {
+func (s *EmailService) SendOrderConfirmation(ctx context.Context, to, orderID string, total float64, items []string) error {
 	subject := fmt.Sprintf("Pedido Confirmado #%s - Pixelcraft Studio", orderID[:8])
-	
-	itemsHTML := ""
-	for _, item := range items {
-		itemsHTML += fmt.Sprintf("<li>%s</li>", item)
-	}
 
-	html := fmt.Sprintf(`
+	// Use html/template to escape XSS in items
+	tmpl := template.Must(template.New("order").Parse(`
 <!DOCTYPE html>
 <html>
 <head>
@@ -349,9 +326,11 @@ func (s *EmailService) SendOrderConfirmation(to, orderID string, total float64, 
         .container { max-width: 600px; margin: 0 auto; padding: 40px; }
         .header { text-align: center; margin-bottom: 30px; }
         .logo { font-size: 28px; font-weight: bold; color: #8b5cf6; }
-        .content { background: linear-gradient(135deg, #1a1a2e 0%%, #16213e 100%%); padding: 30px; border-radius: 12px; }
+        .content { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); padding: 30px; border-radius: 12px; }
         .total { font-size: 24px; color: #10b981; font-weight: bold; }
         .items { background: rgba(0,0,0,0.3); padding: 15px; border-radius: 8px; margin: 15px 0; }
+        .items ul { margin: 10px 0; padding-left: 20px; }
+        .items li { margin: 5px 0; }
     </style>
 </head>
 <body>
@@ -361,20 +340,33 @@ func (s *EmailService) SendOrderConfirmation(to, orderID string, total float64, 
         </div>
         <div class="content">
             <h2>Pedido Confirmado! ✅</h2>
-            <p><strong>Pedido:</strong> #%s</p>
+            <p><strong>Pedido:</strong> #{{.OrderID}}</p>
             <div class="items">
                 <strong>Itens:</strong>
-                <ul>%s</ul>
+                <ul>
+                    {{range .Items}}<li>{{.}}</li>{{end}}
+                </ul>
             </div>
-            <p class="total">Total: R$ %.2f</p>
+            <p class="total">Total: R$ {{.Total}}</p>
             <p>Seus jogos já estão disponíveis na sua biblioteca!</p>
         </div>
     </div>
 </body>
 </html>
-`, orderID[:8], itemsHTML, total)
+`))
 
-	return s.SendEmailHTML(to, subject, html, "")
+	var htmlBuf bytes.Buffer
+	data := map[string]interface{}{
+		"OrderID": orderID[:8],
+		"Total":   fmt.Sprintf("%.2f", total),
+		"Items":   items,
+	}
+	
+	if err := tmpl.Execute(&htmlBuf, data); err != nil {
+		return fmt.Errorf("failed to render email template: %w", err)
+	}
+
+	return s.SendEmailHTML(ctx, to, subject, htmlBuf.String(), "")
 }
 
 // getEnv returns environment variable or default value
@@ -383,4 +375,116 @@ func getEnv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+// SMTPPool manages a pool of reusable SMTP connections
+type SMTPPool struct {
+	config    EmailConfig
+	connections chan *SMTPConnection
+	mu          sync.Mutex
+	maxSize     int
+}
+
+// SMTPConnection holds an SMTP client and its connection
+type SMTPConnection struct {
+	client    *smtp.Client
+	lastUsed  time.Time
+}
+
+// NewSMTPPool creates a new SMTP connection pool
+func NewSMTPPool(config EmailConfig, maxSize int) *SMTPPool {
+	return &SMTPPool{
+		config:      config,
+		connections: make(chan *SMTPConnection, maxSize),
+		maxSize:     maxSize,
+	}
+}
+
+// Get retrieves a connection from the pool or creates a new one
+func (p *SMTPPool) Get(ctx context.Context) (*smtp.Client, net.Conn, error) {
+	select {
+	case conn := <-p.connections:
+		// Check if connection is still alive
+		if err := conn.client.Noop(); err == nil {
+			return conn.client, nil, nil
+		}
+		// Connection dead, create new one
+		conn.client.Close()
+	default:
+		// No connections available, create new one
+	}
+
+	// Create new connection with context support
+	addr := fmt.Sprintf("%s:%s", p.config.Host, p.config.Port)
+	auth := smtp.PlainAuth("", p.config.Username, p.config.Password, p.config.Host)
+
+	// Dial with context - NATIVE cancellation, no goroutine leaks
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to dial SMTP: %w", err)
+	}
+
+	// Create client
+	host, _, _ := net.SplitHostPort(addr)
+	client, err := smtp.NewClient(conn, host)
+	if err != nil {
+		conn.Close()
+		return nil, nil, fmt.Errorf("failed to create SMTP client: %w", err)
+	}
+
+	// STARTTLS for ports 25 and 587
+	if p.config.Port == "25" || p.config.Port == "587" {
+		tlsConfig := &tls.Config{
+			ServerName: p.config.Host,
+			MinVersion: tls.VersionTLS12,
+		}
+		if err := client.StartTLS(tlsConfig); err != nil {
+			client.Close()
+			conn.Close()
+			return nil, nil, fmt.Errorf("STARTTLS failed: %w", err)
+		}
+	}
+
+	// Authenticate
+	if err := client.Auth(auth); err != nil {
+		client.Close()
+		conn.Close()
+		return nil, nil, fmt.Errorf("SMTP auth failed: %w", err)
+	}
+
+	return client, conn, nil
+}
+
+// Put returns a connection to the pool
+func (p *SMTPPool) Put(client *smtp.Client) {
+	if client == nil {
+		return
+	}
+
+	// Check if client is still usable
+	if err := client.Noop(); err != nil {
+		client.Close()
+		return
+	}
+
+	// Try to return to pool (non-blocking)
+	select {
+	case p.connections <- &SMTPConnection{client: client, lastUsed: time.Now()}:
+		// Successfully returned to pool
+	default:
+		// Pool full, close connection
+		client.Close()
+	}
+}
+
+// Close closes all connections in the pool
+func (p *SMTPPool) Close() {
+	close(p.connections)
+	for conn := range p.connections {
+		if conn.client != nil {
+			conn.client.Quit()
+			conn.client.Close()
+		}
+	}
 }

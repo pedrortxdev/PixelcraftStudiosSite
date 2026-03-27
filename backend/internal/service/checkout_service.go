@@ -191,7 +191,7 @@ func (s *CheckoutService) ProcessCheckout(ctx context.Context, userID uuid.UUID,
 	}
 
 	// Create MP Preference
-	mpResp, err := s.depositService.CreatePreference(userID, finalAmount, paymentID.String())
+	mpResp, err := s.depositService.CreatePreference(ctx, userID, finalAmount, paymentID.String())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create payment preference: %w", err)
 	}

@@ -23,6 +23,15 @@ var (
 	ErrDiscountInactive    = errors.New("cupom não está ativo")
 )
 
+// Discount Management Errors
+var (
+	ErrDiscountNotFound          = errors.New("cupom não encontrado")
+	ErrDiscountCodeAlreadyExists = errors.New("código do cupom já existe")
+	ErrDiscountInvalidValue      = errors.New("valor do desconto inválido")
+	ErrDiscountInvalidPercentage = errors.New("porcentagem deve estar entre 0 e 100")
+	ErrDiscountNegativeValue     = errors.New("valor do desconto não pode ser negativo")
+)
+
 // Product Errors
 var (
 	ErrProductNotFound = errors.New("produto não encontrado")
@@ -102,6 +111,23 @@ func Convert(err error) APIError {
 	}
 	if errors.Is(err, ErrDiscountInactive) {
 		return APIError{Error: err.Error(), Code: "ERR_DISCOUNT_INACTIVE"}
+	}
+
+	// Discount Management Errors
+	if errors.Is(err, ErrDiscountNotFound) {
+		return APIError{Error: err.Error(), Code: "ERR_DISCOUNT_NOT_FOUND"}
+	}
+	if errors.Is(err, ErrDiscountCodeAlreadyExists) {
+		return APIError{Error: err.Error(), Code: "ERR_DISCOUNT_CODE_EXISTS"}
+	}
+	if errors.Is(err, ErrDiscountInvalidValue) {
+		return APIError{Error: err.Error(), Code: "ERR_DISCOUNT_INVALID_VALUE"}
+	}
+	if errors.Is(err, ErrDiscountInvalidPercentage) {
+		return APIError{Error: err.Error(), Code: "ERR_DISCOUNT_INVALID_PERCENTAGE"}
+	}
+	if errors.Is(err, ErrDiscountNegativeValue) {
+		return APIError{Error: err.Error(), Code: "ERR_DISCOUNT_NEGATIVE_VALUE"}
 	}
 
 	// Product Errors

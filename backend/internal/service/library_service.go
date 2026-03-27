@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/pixelcraft/api/internal/models"
@@ -11,56 +12,123 @@ import (
 
 // LibraryService contains business logic for user library and downloads
 type LibraryService struct {
-	libraryRepo    *repository.LibraryRepository
-	productService *ProductService
+	libraryRepo *repository.LibraryRepository
+	productRepo *repository.ProductRepository
+	fileService *FileService
 }
 
-func NewLibraryService(libraryRepo *repository.LibraryRepository, productService *ProductService) *LibraryService {
-	return &LibraryService{libraryRepo: libraryRepo, productService: productService}
-}
-
-// GetUserLibrary returns purchased items for a user
-func (s *LibraryService) GetUserLibrary(ctx context.Context, userID string) (interface{}, error) {
-	uid, err := uuid.Parse(userID)
-	if err != nil {
-		return nil, fmt.Errorf("invalid user ID: %w", err)
+func NewLibraryService(
+	libraryRepo *repository.LibraryRepository,
+	productRepo *repository.ProductRepository,
+	fileService *FileService,
+) *LibraryService {
+	return &LibraryService{
+		libraryRepo: libraryRepo,
+		productRepo: productRepo,
+		fileService: fileService,
 	}
+}
 
-	items, err := s.libraryRepo.GetUserLibrary(ctx, uid)
+// LibraryItem represents a typed library item (no more interface{})
+type LibraryItem struct {
+	models.UserPurchaseWithProduct
+	DownloadToken     *string    `json:"download_token,omitempty"`      // Ephemeral token for OneTimeDownload
+	DownloadExpiresAt *time.Time `json:"download_expires_at,omitempty"` // Token expiration
+}
+
+// GetUserLibrary returns purchased items for a user (PROPERLY TYPED)
+func (s *LibraryService) GetUserLibrary(ctx context.Context, userID uuid.UUID) ([]LibraryItem, error) {
+	items, err := s.libraryRepo.GetUserLibrary(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
-	return items, nil
+
+	// Convert to LibraryItem with proper type
+	result := make([]LibraryItem, len(items))
+	for i, item := range items {
+		result[i] = LibraryItem{
+			UserPurchaseWithProduct: item,
+			// DownloadToken is generated on-demand in GetDownloadInfo
+		}
+	}
+
+	return result, nil
 }
 
-// GetDownloadInfo verifies ownership and returns download information
-func (s *LibraryService) GetDownloadInfo(ctx context.Context, userID string, productIDStr string) (string, bool, error) {
-	uid, err := uuid.Parse(userID)
+// GetDownloadInfo verifies ownership and generates ONE-TIME download token
+// This prevents link sharing/piracy - tokens expire and can only be used once
+func (s *LibraryService) GetDownloadInfo(ctx context.Context, userID uuid.UUID, productID uuid.UUID) (*DownloadInfo, error) {
+	// 1. Verify user owns the product
+	owns, err := s.libraryRepo.UserOwnsProduct(ctx, userID, productID)
 	if err != nil {
-		return "", false, fmt.Errorf("invalid user ID: %w", err)
-	}
-
-	// Validate the product ID format before processing
-	pid, err := uuid.Parse(productIDStr)
-	if err != nil {
-		return "", false, fmt.Errorf("invalid product ID format: %w", err)
-	}
-
-	owns, err := s.libraryRepo.UserOwnsProduct(ctx, uid, pid)
-	if err != nil {
-		return "", false, err
+		return nil, fmt.Errorf("failed to verify ownership: %w", err)
 	}
 	if !owns {
-		return "", false, fmt.Errorf("user does not own this product")
+		return nil, fmt.Errorf("user does not own this product")
 	}
 
-	url, isFile, err := s.productService.GetDownloadInfo(ctx, pid)
+	// 2. Get product details
+	product, err := s.productRepo.GetByID(ctx, productID)
 	if err != nil {
-		return "", false, err
+		return nil, fmt.Errorf("failed to get product: %w", err)
 	}
-	return url, isFile, nil
+	if product == nil {
+		return nil, fmt.Errorf("product not found")
+	}
+
+	// 3. Generate ONE-TIME download token (prevents link sharing)
+	token, err := s.fileService.GenerateOneTimeDownloadToken(ctx, productID, userID, 15, 1) // 15 min, 1 download
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate download token: %w", err)
+	}
+
+	// 4. Return ephemeral URL (not static!)
+	return &DownloadInfo{
+		ProductID:       productID,
+		ProductName:     product.Name,
+		DownloadURL:     fmt.Sprintf("https://api.pixelcraft-studio.store/api/v1/files/onedownload/%s", token.Token.String()),
+		Token:           token.Token,
+		ExpiresAt:       token.ExpiresAt,
+		MaxDownloads:    token.MaxDownloads,
+		RemainingUses:   token.MaxDownloads,
+		IsOneTime:       true,
+	}, nil
 }
 
-func (s *LibraryService) GetProduct(ctx context.Context, productID uuid.UUID) (*models.Product, error) {
-	return s.productService.GetProduct(ctx, productID)
-}	
+// DownloadInfo contains ephemeral download information (not static URLs)
+type DownloadInfo struct {
+	ProductID     uuid.UUID  `json:"product_id"`
+	ProductName   string     `json:"product_name"`
+	DownloadURL   string     `json:"download_url"` // One-time token URL
+	Token         uuid.UUID  `json:"token"`
+	ExpiresAt     time.Time  `json:"expires_at"`
+	MaxDownloads  int        `json:"max_downloads"`
+	RemainingUses int        `json:"remaining_uses"`
+	IsOneTime     bool       `json:"is_one_time"`
+}
+
+// ValidateDownloadToken validates a one-time download token and returns file path
+func (s *LibraryService) ValidateDownloadToken(ctx context.Context, token uuid.UUID, ipAddress, userAgent string) (*models.File, error) {
+	// This would call fileService to validate and use the token
+	// The token is consumed (decremented) on each use
+	fileID, valid, reason, err := s.fileService.ValidateOneTimeDownloadToken(ctx, token, ipAddress, userAgent)
+	if err != nil {
+		return nil, err
+	}
+	if !valid {
+		return nil, fmt.Errorf("invalid or expired token: %s", reason)
+	}
+
+	// Get file details
+	file, err := s.fileService.GetFileByID(ctx, fileID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get file: %w", err)
+	}
+
+	return file, nil
+}
+
+// UserOwnsProduct checks if user purchased a specific product
+func (s *LibraryService) UserOwnsProduct(ctx context.Context, userID uuid.UUID, productID uuid.UUID) (bool, error) {
+	return s.libraryRepo.UserOwnsProduct(ctx, userID, productID)
+}

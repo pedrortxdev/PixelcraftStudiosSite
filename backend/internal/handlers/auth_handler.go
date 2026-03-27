@@ -200,7 +200,7 @@ func (h *AuthHandler) ForgotPassword(c *gin.Context) {
 	htmlBody := h.buildPasswordResetEmailHTML(resetLink, requestCode)
 
 	// Send email
-	err = h.emailService.SendEmailHTML(req.Email, "Recuperação de Senha - Pixelcraft Studios", htmlBody, "")
+	err = h.emailService.SendEmailHTML(c.Request.Context(), req.Email, "Recuperação de Senha - Pixelcraft Studios", htmlBody, "")
 	if err != nil {
 		fmt.Printf("Error sending email to %s: %v\n", req.Email, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Erro ao enviar email"})

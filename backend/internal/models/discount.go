@@ -65,6 +65,18 @@ type UpdateDiscountRequest struct {
 	MaxUses         *int             `json:"max_uses"`
 }
 
+// DiscountUpdate represents domain-level discount updates (avoids leaking DB column names)
+type DiscountUpdate struct {
+	Code            *string
+	Type            *DiscountType
+	Value           *float64
+	RestrictionType *RestrictionType
+	TargetIDs       []uuid.UUID
+	IsActive        *bool
+	ExpiresAt       *time.Time
+	MaxUses         *int
+}
+
 // ValidateDiscountRequest represents the request to validate a discount code
 type ValidateDiscountRequest struct {
 	Code      string     `json:"code" binding:"required"`

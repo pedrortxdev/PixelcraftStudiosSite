@@ -84,11 +84,22 @@ func main() {
 	paymentService := service.NewPaymentService(db.DB)
 	// Initialize Mercado Pago Auth Service
 	mpAuthService := service.NewMercadoPagoAuthService(cfg.MercadoPago)
-	depositService := service.NewDepositService(transactionRepo, userRepo, paymentRepo, mpAuthService, cfg.MercadoPago.WebhookURL)
+	depositService := service.NewDepositService(
+		transactionRepo,
+		userRepo,
+		paymentRepo,
+		mpAuthService,
+		cfg.MercadoPago.WebhookURL,
+		service.DepositURLs{
+			Success: cfg.MercadoPago.DepositSuccessURL,
+			Failure: cfg.MercadoPago.DepositFailureURL,
+			Pending: cfg.MercadoPago.DepositPendingURL,
+		},
+	)
 
 	checkoutService := service.NewCheckoutService(db.DB, productRepo, discountRepo, paymentRepo, userRepo, subscriptionRepo, libraryRepo, depositService)
 	depositService.SetCheckoutService(checkoutService) // Break circular dependency
-	libraryService := service.NewLibraryService(libraryRepo, productService)
+	libraryService := service.NewLibraryService(libraryRepo, productRepo, fileService)
 	historyService := service.NewHistoryService(paymentRepo, libraryRepo)
 	subscriptionService := service.NewSubscriptionService(subscriptionRepo)
 	discountService := service.NewDiscountService(discountRepo)

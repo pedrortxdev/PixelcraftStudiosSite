@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/pixelcraft/api/internal/models"
@@ -188,30 +189,63 @@ func (r *DiscountRepository) Create(ctx context.Context, d *models.Discount) err
 	return nil
 }
 
-// Update updates an existing discount
-func (r *DiscountRepository) Update(ctx context.Context, id uuid.UUID, updates map[string]interface{}) error {
-	if len(updates) == 0 {
+// Update updates an existing discount using domain-level update struct
+func (r *DiscountRepository) Update(ctx context.Context, id uuid.UUID, updates *models.DiscountUpdate) error {
+	if updates == nil {
 		return nil
 	}
 
-	query := "UPDATE discounts SET "
+	setClauses := []string{}
 	args := []interface{}{}
-	i := 1
+	argIndex := 1
 
-	for key, value := range updates {
-		if key == "target_ids" {
-			query += fmt.Sprintf("%s = $%d, ", key, i)
-			args = append(args, pq.Array(value.([]uuid.UUID)))
-		} else {
-			query += fmt.Sprintf("%s = $%d, ", key, i)
-			args = append(args, value)
-		}
-		i++
+	if updates.Code != nil {
+		setClauses = append(setClauses, fmt.Sprintf("code = $%d", argIndex))
+		args = append(args, *updates.Code)
+		argIndex++
+	}
+	if updates.Type != nil {
+		setClauses = append(setClauses, fmt.Sprintf("type = $%d", argIndex))
+		args = append(args, *updates.Type)
+		argIndex++
+	}
+	if updates.Value != nil {
+		setClauses = append(setClauses, fmt.Sprintf("value = $%d", argIndex))
+		args = append(args, *updates.Value)
+		argIndex++
+	}
+	if updates.RestrictionType != nil {
+		setClauses = append(setClauses, fmt.Sprintf("restriction_type = $%d", argIndex))
+		args = append(args, *updates.RestrictionType)
+		argIndex++
+	}
+	if updates.TargetIDs != nil {
+		setClauses = append(setClauses, fmt.Sprintf("target_ids = $%d", argIndex))
+		args = append(args, pq.Array(updates.TargetIDs))
+		argIndex++
+	}
+	if updates.IsActive != nil {
+		setClauses = append(setClauses, fmt.Sprintf("is_active = $%d", argIndex))
+		args = append(args, *updates.IsActive)
+		argIndex++
+	}
+	if updates.ExpiresAt != nil {
+		setClauses = append(setClauses, fmt.Sprintf("expires_at = $%d", argIndex))
+		args = append(args, *updates.ExpiresAt)
+		argIndex++
+	}
+	if updates.MaxUses != nil {
+		setClauses = append(setClauses, fmt.Sprintf("max_uses = $%d", argIndex))
+		args = append(args, *updates.MaxUses)
+		argIndex++
 	}
 
-	// Remove trailing comma and space
-	query = query[:len(query)-2]
-	query += fmt.Sprintf(" WHERE id = $%d", i)
+	if len(setClauses) == 0 {
+		return nil
+	}
+
+	query := fmt.Sprintf("UPDATE discounts SET %s, updated_at = NOW() WHERE id = $%d",
+		strings.Join(setClauses, ", "), argIndex)
 	args = append(args, id)
 
 	_, err := r.db.ExecContext(ctx, query, args...)
@@ -222,9 +256,20 @@ func (r *DiscountRepository) Update(ctx context.Context, id uuid.UUID, updates m
 	return nil
 }
 
-// Delete deletes a discount
-func (r *DiscountRepository) Delete(ctx context.Context, id uuid.UUID) error {
-	query := `DELETE FROM discounts WHERE id = $1`
+// CodeExists checks if a discount code already exists
+func (r *DiscountRepository) CodeExists(ctx context.Context, code string) (bool, error) {
+	query := `SELECT EXISTS(SELECT 1 FROM discounts WHERE code = $1)`
+	var exists bool
+	err := r.db.QueryRowContext(ctx, query, code).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("failed to check discount code existence: %w", err)
+	}
+	return exists, nil
+}
+
+// Deactivate soft deletes a discount by setting is_active to false
+func (r *DiscountRepository) Deactivate(ctx context.Context, id uuid.UUID) error {
+	query := `UPDATE discounts SET is_active = false, updated_at = NOW() WHERE id = $1`
 	_, err := r.db.ExecContext(ctx, query, id)
 	return err
 }

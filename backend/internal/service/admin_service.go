@@ -69,7 +69,7 @@ func (s *AdminService) ListTransactions(ctx context.Context, page, limit int, st
 
 // GetMercadoPagoBalance gets the Mercado Pago account balance
 func (s *AdminService) GetMercadoPagoBalance(ctx context.Context) (*MPBalanceResponse, error) {
-	return s.depositService.GetAccountBalance()
+	return s.depositService.GetAccountBalance(ctx)
 }
 
 // ListUsers lists users with pagination
@@ -238,7 +238,7 @@ func (s *AdminService) RefundTransaction(ctx context.Context, transactionID stri
 	}
 
 	// 3. Call MP Refund
-	if err := s.depositService.RefundPayment(*tx.ProviderPaymentID); err != nil {
+	if err := s.depositService.RefundPayment(ctx, *tx.ProviderPaymentID); err != nil {
 		return fmt.Errorf("failed to refund in Mercado Pago: %w", err)
 	}
 

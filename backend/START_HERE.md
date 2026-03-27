@@ -11,9 +11,8 @@ Este é o backend de autenticação e gerenciamento de usuários do Pixelcraft.
 ### Step 1: Setup Database (1 min)
 ```powershell
 # Run this in PowerShell
-psql -U pedro -d postgres -c "CREATE DATABASE pixelcraft;"
-psql -U pedro -d pixelcraft -f database/schema.sql
-```
+psql -U postgres -d postgres -c "CREATE DATABASE pixelcraft;"
+psql -U postgres -d postgres -c "CREATE DATABASE pixelcraft;"```
 
 ### Step 2: Install Dependencies (1 min)
 ```powershell

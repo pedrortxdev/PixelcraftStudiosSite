@@ -101,6 +101,21 @@ type FilePermission struct {
 	PublicLinkURL       string     `json:"public_link_url,omitempty"`
 }
 
+// FilePermissionResponse is the DTO for file permission responses (properly typed)
+type FilePermissionResponse struct {
+	FileID              uuid.UUID  `json:"file_id"`
+	AccessType          AccessType `json:"access_type"`
+	RequiredRole        *string    `json:"required_role,omitempty"`
+	AllowedRoles        []string   `json:"allowed_roles,omitempty"`
+	RequiredProductID   *uuid.UUID `json:"required_product_id,omitempty"`
+	AllowedProductIDs   []uuid.UUID `json:"allowed_product_ids,omitempty"` // UUIDs, not strings
+	PublicLinkToken     uuid.UUID  `json:"public_link_token"`
+	PublicLinkExpiresAt *time.Time `json:"public_link_expires_at,omitempty"`
+	DownloadCount       int        `json:"download_count"`
+	MaxDownloads        *int       `json:"max_downloads,omitempty"`
+	PublicLinkURL       string     `json:"public_link_url,omitempty"`
+}
+
 // FileAccessLog represents a file access log entry
 type FileAccessLog struct {
 	ID            uuid.UUID `db:"id" json:"id"`

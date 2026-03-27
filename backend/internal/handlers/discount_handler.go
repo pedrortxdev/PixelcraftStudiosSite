@@ -1,10 +1,12 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/pixelcraft/api/internal/apierrors"
 	"github.com/pixelcraft/api/internal/models"
 	"github.com/pixelcraft/api/internal/service"
 )
@@ -36,6 +38,10 @@ func (h *DiscountHandler) GetDiscount(c *gin.Context) {
 
 	discount, err := h.service.GetDiscount(c.Request.Context(), id)
 	if err != nil {
+		if errors.Is(err, apierrors.ErrDiscountNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Discount not found"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get discount"})
 		return
 	}
@@ -55,11 +61,26 @@ func (h *DiscountHandler) CreateDiscount(c *gin.Context) {
 	}
 
 	adminIDStr, _ := c.Get("user_id")
-	adminID := uuid.MustParse(adminIDStr.(string))
+	adminID, err := uuid.Parse(adminIDStr.(string))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid admin ID"})
+		return
+	}
 
 	discount, err := h.service.CreateDiscount(c.Request.Context(), &req, adminID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create discount"})
+		switch {
+		case errors.Is(err, apierrors.ErrDiscountCodeAlreadyExists):
+			c.JSON(http.StatusConflict, gin.H{"error": "Discount code already exists"})
+		case errors.Is(err, apierrors.ErrDiscountInvalidValue):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid discount value"})
+		case errors.Is(err, apierrors.ErrDiscountInvalidPercentage):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Percentage must be between 0 and 100"})
+		case errors.Is(err, apierrors.ErrDiscountNegativeValue):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Discount value cannot be negative"})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create discount"})
+		}
 		return
 	}
 
@@ -82,7 +103,20 @@ func (h *DiscountHandler) UpdateDiscount(c *gin.Context) {
 
 	err = h.service.UpdateDiscount(c.Request.Context(), id, &req)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update discount"})
+		switch {
+		case errors.Is(err, apierrors.ErrDiscountNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": "Discount not found"})
+		case errors.Is(err, apierrors.ErrDiscountCodeAlreadyExists):
+			c.JSON(http.StatusConflict, gin.H{"error": "Discount code already exists"})
+		case errors.Is(err, apierrors.ErrDiscountInvalidValue):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid discount value"})
+		case errors.Is(err, apierrors.ErrDiscountInvalidPercentage):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Percentage must be between 0 and 100"})
+		case errors.Is(err, apierrors.ErrDiscountNegativeValue):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Discount value cannot be negative"})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update discount"})
+		}
 		return
 	}
 
@@ -99,9 +133,13 @@ func (h *DiscountHandler) DeleteDiscount(c *gin.Context) {
 
 	err = h.service.DeleteDiscount(c.Request.Context(), id)
 	if err != nil {
+		if errors.Is(err, apierrors.ErrDiscountNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Discount not found"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete discount"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Discount deleted successfully"})
+	c.JSON(http.StatusOK, gin.H{"message": "Discount deactivated successfully"})
 }
