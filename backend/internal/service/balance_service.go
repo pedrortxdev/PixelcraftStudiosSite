@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jmoiron/sqlx"
 	"github.com/pixelcraft/api/internal/models"
 	"github.com/pixelcraft/api/internal/repository"
 )
@@ -16,14 +17,14 @@ import (
 type BalanceService struct {
 	txRepo *repository.TransactionRepository
 	userRepo *repository.UserRepository
-	db *sql.DB
+	db *sqlx.DB
 }
 
 // NewBalanceService creates a new BalanceService
 func NewBalanceService(
 	txRepo *repository.TransactionRepository,
 	userRepo *repository.UserRepository,
-	db *sql.DB,
+	db *sqlx.DB,
 ) *BalanceService {
 	return &BalanceService{
 		txRepo: txRepo,
@@ -52,6 +53,30 @@ type AdminAdjustmentResult struct {
 // AdminAdjustment performs an atomic balance adjustment with full audit trail
 // Uses FOR UPDATE row locking to prevent race conditions
 func (s *BalanceService) AdminAdjustment(ctx context.Context, input AdminAdjustmentInput) (*AdminAdjustmentResult, error) {
+	// Start transaction with proper isolation
+	tx, err := s.db.BeginTxx(ctx, &sql.TxOptions{
+		Isolation: sql.LevelReadCommitted,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	result, err := s.AdminAdjustmentTx(ctx, tx, input)
+	if err != nil {
+		return nil, err
+	}
+
+	// Commit transaction
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return result, nil
+}
+
+// AdminAdjustmentTx performs the adjustment within an existing transaction
+func (s *BalanceService) AdminAdjustmentTx(ctx context.Context, tx *sqlx.Tx, input AdminAdjustmentInput) (*AdminAdjustmentResult, error) {
 	// Parse and validate user ID upfront
 	userUUID, err := uuid.Parse(input.UserID)
 	if err != nil {
@@ -62,15 +87,6 @@ func (s *BalanceService) AdminAdjustment(ctx context.Context, input AdminAdjustm
 	if err != nil {
 		return nil, fmt.Errorf("invalid admin ID format: %w", err)
 	}
-
-	// Start transaction with proper isolation
-	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{
-		Isolation: sql.LevelReadCommitted,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback()
 
 	// Lock the user row and get current balance (atomic read)
 	var oldBalance int64
@@ -110,13 +126,8 @@ func (s *BalanceService) AdminAdjustment(ctx context.Context, input AdminAdjustm
 		UpdatedAt:         time.Now(),
 	}
 
-	if err := s.txRepo.Create(transaction); err != nil {
+	if err := s.txRepo.CreateTx(tx, transaction); err != nil {
 		return nil, fmt.Errorf("failed to create transaction record: %w", err)
-	}
-
-	// Commit transaction
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	return &AdminAdjustmentResult{
@@ -137,6 +148,29 @@ type RefundDepositInput struct {
 // RefundDeposit performs an atomic refund of a deposit transaction
 // Includes balance check and deduction within the same transaction
 func (s *BalanceService) RefundDeposit(ctx context.Context, input RefundDepositInput) error {
+	// Start transaction
+	tx, err := s.db.BeginTxx(ctx, &sql.TxOptions{
+		Isolation: sql.LevelReadCommitted,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := s.RefundDepositTx(ctx, tx, input); err != nil {
+		return err
+	}
+
+	// Commit transaction
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return nil
+}
+
+// RefundDepositTx performs the refund within an existing transaction
+func (s *BalanceService) RefundDepositTx(ctx context.Context, tx *sqlx.Tx, input RefundDepositInput) error {
 	// Parse and validate IDs upfront
 	txUUID, err := uuid.Parse(input.TransactionID)
 	if err != nil {
@@ -147,15 +181,6 @@ func (s *BalanceService) RefundDeposit(ctx context.Context, input RefundDepositI
 	if err != nil {
 		return fmt.Errorf("invalid admin ID format: %w", err)
 	}
-
-	// Start transaction
-	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{
-		Isolation: sql.LevelReadCommitted,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback()
 
 	// Lock and get transaction with FOR UPDATE
 	var transaction models.Transaction
@@ -224,13 +249,8 @@ func (s *BalanceService) RefundDeposit(ctx context.Context, input RefundDepositI
 		UpdatedAt:         time.Now(),
 	}
 
-	if err := s.txRepo.Create(refundTransaction); err != nil {
+	if err := s.txRepo.CreateTx(tx, refundTransaction); err != nil {
 		return fmt.Errorf("failed to create refund transaction record: %w", err)
-	}
-
-	// Commit transaction
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	return nil

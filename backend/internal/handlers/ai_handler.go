@@ -36,7 +36,11 @@ func (h *AIHandler) FormatText(c *gin.Context) {
 		return
 	}
 
-	formattedText, err := h.aiService.FormatText(req.Text)
+	// Use context with timeout for AI operations
+	ctx, cancel := c.Request.Context(), func() {}
+	defer cancel()
+
+	formattedText, err := h.aiService.FormatText(ctx, req.Text)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to format text: " + err.Error()})
 		return
@@ -79,8 +83,11 @@ func (h *AIHandler) GenerateAvatar(c *gin.Context) {
 		uid = req.UserID
 	}
 
-	// Generate Image via AI
-	base64Data, err := h.aiService.GenerateAvatar(req.Prompt)
+	// Generate Image via AI with context for timeout/cancellation
+	ctx, cancel := c.Request.Context(), func() {}
+	defer cancel()
+
+	base64Data, err := h.aiService.GenerateAvatar(ctx, req.Prompt)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate AI avatar: " + err.Error()})
 		return

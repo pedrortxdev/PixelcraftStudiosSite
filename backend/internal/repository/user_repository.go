@@ -510,6 +510,11 @@ func (r *UserRepository) ListAll(ctx context.Context, page, limit int, search st
 
 // UpdateUserAdmin updates a user's profile information including email (Admin only)
 func (r *UserRepository) UpdateUserAdmin(ctx context.Context, userID string, updates map[string]interface{}) error {
+	return r.UpdateUserAdminTx(ctx, nil, userID, updates)
+}
+
+// UpdateUserAdminTx updates a user's profile information within an existing transaction (Admin only)
+func (r *UserRepository) UpdateUserAdminTx(ctx context.Context, tx *sql.Tx, userID string, updates map[string]interface{}) error {
 	// Validate UUID format
 	_, err := uuid.Parse(userID)
 	if err != nil {
@@ -531,7 +536,7 @@ func (r *UserRepository) UpdateUserAdmin(ctx context.Context, userID string, upd
 
 	for key, value := range updates {
 		if !allowedFields[key] {
-			log.Printf("UpdateUserAdmin: Saltando campo inválido '%s'", key)
+			log.Printf("UpdateUserAdminTx: Saltando campo inválido '%s'", key)
 			continue
 		}
 
@@ -555,10 +560,20 @@ func (r *UserRepository) UpdateUserAdmin(ctx context.Context, userID string, upd
 		strings.Join(setClauses, ", "),
 	)
 
-	_, err = r.db.ExecContext(ctx, query, args...)
+	var execTx interface {
+		ExecContext(context.Context, string, ...interface{}) (sql.Result, error)
+	}
+
+	if tx != nil {
+		execTx = tx
+	} else {
+		execTx = r.db
+	}
+
+	_, err = execTx.ExecContext(ctx, query, args...)
 	if err != nil {
-		log.Printf("ERROR Admin UpdateUser: %v | UserID: %s | Query: %s", err, userID, query)
-		return fmt.Errorf("failed to update user (admin): %w", err)
+		log.Printf("ERROR Admin UpdateUserTx: %v | UserID: %s | Query: %s", err, userID, query)
+		return fmt.Errorf("failed to update user (admin tx): %w", err)
 	}
 
 	return nil

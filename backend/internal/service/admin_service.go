@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
+	"github.com/jmoiron/sqlx"
 	"github.com/pixelcraft/api/internal/models"
 	"github.com/pixelcraft/api/internal/repository"
 	"golang.org/x/crypto/bcrypt"
@@ -16,6 +18,7 @@ type AdminService struct {
 	balanceService   *BalanceService
 	userQueryService *UserQueryService
 	depositService   *DepositService
+	db               *sqlx.DB
 }
 
 // AdminUserDetail represents aggregated user data for admin view
@@ -33,12 +36,14 @@ func NewAdminService(
 	balanceService *BalanceService,
 	userQueryService *UserQueryService,
 	depositService *DepositService,
+	db *sqlx.DB,
 ) *AdminService {
 	return &AdminService{
 		repo:             repo,
 		balanceService:   balanceService,
 		userQueryService: userQueryService,
 		depositService:   depositService,
+		db:               db,
 	}
 }
 
@@ -52,7 +57,7 @@ func (s *AdminService) GetRecentOrders(ctx context.Context) ([]repository.Recent
 	return s.repo.GetRecentOrders()
 }
 
-// GetTopProducts gets top selling products for dashboard
+// GetTopProducts gets top products for dashboard
 func (s *AdminService) GetTopProducts(ctx context.Context) ([]repository.TopProduct, error) {
 	return s.repo.GetTopProducts()
 }
@@ -75,7 +80,6 @@ func (s *AdminService) ListUsers(ctx context.Context, page, limit int, search st
 }
 
 // GetUserDetail returns full details for a user
-// Validates UUID early and returns errors for critical failures (no silent fallbacks)
 func (s *AdminService) GetUserDetail(ctx context.Context, userID string) (*AdminUserDetail, error) {
 	// Delegate to UserQueryService which handles all the aggregation logic
 	result, err := s.userQueryService.GetUserDetailOpt(ctx, userID)
@@ -93,8 +97,15 @@ func (s *AdminService) GetUserDetail(ctx context.Context, userID string) (*Admin
 }
 
 // UpdateUser updates user details
-// Uses atomic balance operations to prevent race conditions
+// Uses a single DB transaction to ensure atomicity across balance and profile updates
 func (s *AdminService) UpdateUser(ctx context.Context, userID string, adminID string, updates map[string]interface{}) error {
+	// Start transaction
+	tx, err := s.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to start transaction: %w", err)
+	}
+	defer tx.Rollback()
+
 	// Check if balance is being updated
 	if newBalanceVal, ok := updates["balance"]; ok {
 		// JSON numbers are float64, convert to int64
@@ -112,7 +123,7 @@ func (s *AdminService) UpdateUser(ctx context.Context, userID string, adminID st
 			}
 		}
 
-		// Use atomic balance adjustment (handles transaction + audit internally)
+		// Use atomic balance adjustment within the transaction
 		input := AdminAdjustmentInput{
 			UserID:          userID,
 			AdminID:         adminID,
@@ -121,26 +132,31 @@ func (s *AdminService) UpdateUser(ctx context.Context, userID string, adminID st
 			Reason:          "Admin adjustment via UpdateUser",
 		}
 
-		_, err := s.balanceService.AdminAdjustment(ctx, input)
+		_, err := s.balanceService.AdminAdjustmentTx(ctx, tx, input)
 		if err != nil {
 			return fmt.Errorf("failed to adjust balance: %w", err)
 		}
 
 		// Remove balance and adjustment_type from updates map
-		// (already handled by balance service)
 		delete(updates, "balance")
 		delete(updates, "adjustment_type")
 		delete(updates, "adjustment_reason")
 	}
 
-	// If no other fields to update, we're done
-	if len(updates) == 0 {
-		return nil
+	// If there are other fields to update (email, name, etc.)
+	if len(updates) > 0 {
+		// Pass the transaction to the repository
+		if err := s.userQueryService.userRepo.UpdateUserAdminTx(ctx, tx.Tx, userID, updates); err != nil {
+			return fmt.Errorf("failed to update user profile: %w", err)
+		}
 	}
 
-	// Update other user fields (email, name, etc.)
-	// Note: balance field is already removed from updates map
-	return s.userQueryService.userRepo.UpdateUserAdmin(ctx, userID, updates)
+	// Commit everything atomically
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit update: %w", err)
+	}
+
+	return nil
 }
 
 // UpdateUserPassword resets user password
@@ -168,17 +184,8 @@ func (s *AdminService) RefundTransaction(ctx context.Context, transactionID stri
 		return fmt.Errorf("transaction is not completed, cannot refund")
 	}
 
-	if tx.ProviderPaymentID == nil {
-		return fmt.Errorf("transaction has no provider payment ID")
-	}
-
 	// 2. For deposit refunds, use BalanceService which handles atomic refund
 	if tx.Type == models.TransactionTypeDeposit {
-		// BalanceService.RefundDeposit handles:
-		// - Balance check with proper int64 formatting
-		// - Atomic balance deduction
-		// - Transaction status update
-		// All within a single ACID transaction
 		input := RefundDepositInput{
 			TransactionID: transactionID,
 			AdminID:       adminID,
@@ -186,15 +193,12 @@ func (s *AdminService) RefundTransaction(ctx context.Context, transactionID stri
 		}
 
 		if err := s.balanceService.RefundDeposit(ctx, input); err != nil {
-			// Error message now correctly uses %d for int64 values
 			return err
 		}
 		return nil
 	}
 
-	// 3. For other transaction types (e.g., purchase refunds)
-	// Note: This would typically credit balance back to user
-	// For now, just update status (extend as needed)
+	// 3. For other transaction types
 	if err := s.depositService.repo.UpdateStatus(transactionID, models.TransactionStatusRefunded); err != nil {
 		return fmt.Errorf("failed to update transaction status: %w", err)
 	}
@@ -202,47 +206,60 @@ func (s *AdminService) RefundTransaction(ctx context.Context, transactionID stri
 	return nil
 }
 
-// RefundTransactionMP calls Mercado Pago refund and updates local DB
-// This is a lower-level method for external refund coordination
+// RefundTransactionMP calls Mercado Pago refund and updates local DB safely
+// Uses a "Deduct-then-API-then-Commit" strategy to prevent "Infinite Money" glitches
 func (s *AdminService) RefundTransactionMP(ctx context.Context, transactionID string, adminID string) error {
 	// 1. Get Transaction
-	tx, err := s.depositService.repo.GetByID(transactionID)
+	txData, err := s.depositService.repo.GetByID(transactionID)
 	if err != nil {
 		return fmt.Errorf("failed to get transaction: %w", err)
 	}
-	if tx == nil {
+	if txData == nil {
 		return fmt.Errorf("transaction not found")
 	}
 
-	if tx.Status != models.TransactionStatusCompleted {
+	if txData.Status != models.TransactionStatusCompleted {
 		return fmt.Errorf("transaction is not completed, cannot refund")
 	}
 
-	if tx.ProviderPaymentID == nil {
+	if txData.ProviderPaymentID == nil {
 		return fmt.Errorf("transaction has no provider payment ID")
 	}
 
-	// 2. Call MP Refund first (external API)
-	if err := s.depositService.RefundPayment(ctx, *tx.ProviderPaymentID); err != nil {
-		return fmt.Errorf("failed to refund in Mercado Pago: %w", err)
+	// 2. Start local DB transaction to "reserve" the balance deduction
+	dbTx, err := s.db.BeginTxx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return fmt.Errorf("failed to start transaction: %w", err)
 	}
+	defer dbTx.Rollback()
 
-	// 3. Update local DB atomically
-	if tx.Type == models.TransactionTypeDeposit {
+	// 3. Perform local balance deduction first (atomic check & update)
+	if txData.Type == models.TransactionTypeDeposit {
 		input := RefundDepositInput{
 			TransactionID: transactionID,
 			AdminID:       adminID,
-			Reason:        "MP refund completed",
+			Reason:        "MP refund in progress",
 		}
-		// This will fail if user doesn't have sufficient balance
-		// which is the correct safety behavior
-		if err := s.balanceService.RefundDeposit(ctx, input); err != nil {
-			return fmt.Errorf("refunded in MP but failed to update local DB: %w", err)
+		// This will fail and rollback if user has insufficient balance
+		if err := s.balanceService.RefundDepositTx(ctx, dbTx, input); err != nil {
+			return fmt.Errorf("failed to deduct balance locally: %w", err)
 		}
 	} else {
 		if err := s.depositService.repo.UpdateStatus(transactionID, models.TransactionStatusRefunded); err != nil {
-			return fmt.Errorf("refunded in MP but failed to update status: %w", err)
+			return fmt.Errorf("failed to update status locally: %w", err)
 		}
+	}
+
+	// 4. Call external API (Mercado Pago) while holding the DB transaction open
+	// This ensures that if MP fails, we rollback the balance deduction.
+	// If MP succeeds, we commit.
+	if err := s.depositService.RefundPayment(ctx, *txData.ProviderPaymentID); err != nil {
+		return fmt.Errorf("failed to refund in Mercado Pago: %w (local changes rolled back)", err)
+	}
+
+	// 5. Commit local DB changes only after MP success
+	if err := dbTx.Commit(); err != nil {
+		return fmt.Errorf("MP refund succeeded but failed to commit local DB: %w", err)
 	}
 
 	return nil

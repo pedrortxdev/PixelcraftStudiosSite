@@ -105,14 +105,18 @@ func main() {
 	discountService := service.NewDiscountService(discountRepo)
 
 	// New domain-specific services (SRP compliance)
-	balanceService := service.NewBalanceService(transactionRepo, userRepo, db.DB)
+	balanceService := service.NewBalanceService(transactionRepo, userRepo, db)
 	userQueryService := service.NewUserQueryService(userRepo, transactionRepo, subscriptionRepo, libraryRepo, roleRepo)
 
 	// Admin Service (orchestrator only - delegates to domain services)
-	adminService := service.NewAdminService(adminRepo, balanceService, userQueryService, depositService)
+	adminService := service.NewAdminService(adminRepo, balanceService, userQueryService, depositService, db)
 
-	// AI Service
-	aiService := service.NewAIService()
+	// AI Service (with fail-fast on missing API key)
+	aiCfg := service.DefaultAIConfig()
+	aiService, err := service.NewAIService(aiCfg)
+	if err != nil {
+		log.Fatalf("Failed to initialize AI service: %v", err)
+	}
 
 	// Role and Support Services
 	roleService := service.NewRoleService(roleRepo, userRepo)

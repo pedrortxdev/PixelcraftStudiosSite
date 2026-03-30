@@ -35,6 +35,16 @@ func (r *TransactionRepository) Create(tx *models.Transaction) error {
 	return err
 }
 
+// CreateTx creates a new transaction within an existing transaction
+func (r *TransactionRepository) CreateTx(tx *sqlx.Tx, transaction *models.Transaction) error {
+	query := `
+		INSERT INTO transactions (id, user_id, provider_payment_id, amount, status, type, adjustment_type, created_at, updated_at)
+		VALUES (:id, :user_id, :provider_payment_id, :amount, :status, :type, :adjustment_type, :created_at, :updated_at)
+	`
+	_, err := tx.NamedExec(query, transaction)
+	return err
+}
+
 // GetByProviderPaymentID retrieves a transaction by its provider payment ID
 func (r *TransactionRepository) GetByProviderPaymentID(paymentID string) (*models.Transaction, error) {
 	var tx models.Transaction
