@@ -357,8 +357,21 @@ func (r *UserRepository) GetUserByEmail(ctx context.Context, email string) (*mod
 
 // UpdatePassword updates the user's password hash
 func (r *UserRepository) UpdatePassword(ctx context.Context, userID, passwordHash string) error {
+	return r.UpdatePasswordTx(ctx, nil, userID, passwordHash)
+}
+
+// UpdatePasswordTx updates the user's password hash within a transaction
+func (r *UserRepository) UpdatePasswordTx(ctx context.Context, tx *sql.Tx, userID, passwordHash string) error {
 	query := `UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2`
-	_, err := r.db.ExecContext(ctx, query, passwordHash, userID)
+	var execTx interface {
+		ExecContext(context.Context, string, ...interface{}) (sql.Result, error)
+	}
+	if tx != nil {
+		execTx = tx
+	} else {
+		execTx = r.db
+	}
+	_, err := execTx.ExecContext(ctx, query, passwordHash, userID)
 	return err
 }
 
@@ -384,14 +397,29 @@ func (r *UserRepository) CreatePasswordResetToken(ctx context.Context, userID, t
 
 // GetPasswordResetToken retrieves a password reset token by token URL
 func (r *UserRepository) GetPasswordResetToken(ctx context.Context, tokenURL string) (*models.PasswordResetToken, error) {
+	return r.GetPasswordResetTokenTx(ctx, nil, tokenURL)
+}
+
+// GetPasswordResetTokenTx retrieves a password reset token by token URL with a row-level lock
+func (r *UserRepository) GetPasswordResetTokenTx(ctx context.Context, tx *sql.Tx, tokenURL string) (*models.PasswordResetToken, error) {
 	query := `
 		SELECT id, user_id, verification_code, expires_at
 		FROM password_resets
 		WHERE token_url = $1 AND used = false
+		FOR UPDATE
 	`
 
+	var execTx interface {
+		QueryRowContext(context.Context, string, ...interface{}) *sql.Row
+	}
+	if tx != nil {
+		execTx = tx
+	} else {
+		execTx = r.db
+	}
+
 	var token models.PasswordResetToken
-	err := r.db.QueryRowContext(ctx, query, tokenURL).Scan(&token.ID, &token.UserID, &token.VerificationCode, &token.ExpiresAt)
+	err := execTx.QueryRowContext(ctx, query, tokenURL).Scan(&token.ID, &token.UserID, &token.VerificationCode, &token.ExpiresAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -404,8 +432,21 @@ func (r *UserRepository) GetPasswordResetToken(ctx context.Context, tokenURL str
 
 // MarkPasswordResetTokenUsed marks a password reset token as used
 func (r *UserRepository) MarkPasswordResetTokenUsed(ctx context.Context, tokenID string) error {
+	return r.MarkPasswordResetTokenUsedTx(ctx, nil, tokenID)
+}
+
+// MarkPasswordResetTokenUsedTx marks a password reset token as used within a transaction
+func (r *UserRepository) MarkPasswordResetTokenUsedTx(ctx context.Context, tx *sql.Tx, tokenID string) error {
 	query := `UPDATE password_resets SET used = true WHERE id = $1`
-	_, err := r.db.ExecContext(ctx, query, tokenID)
+	var execTx interface {
+		ExecContext(context.Context, string, ...interface{}) (sql.Result, error)
+	}
+	if tx != nil {
+		execTx = tx
+	} else {
+		execTx = r.db
+	}
+	_, err := execTx.ExecContext(ctx, query, tokenID)
 	return err
 }
 

@@ -1,10 +1,12 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
+	"github.com/pixelcraft/api/internal/apierrors"
 	"github.com/pixelcraft/api/internal/models"
 	"github.com/pixelcraft/api/internal/service"
 
@@ -186,7 +188,7 @@ func (h *AuthHandler) ForgotPassword(c *gin.Context) {
 	// Generate temporary reset token
 	resetToken, requestCode, err := h.service.GenerateResetToken(c.Request.Context(), req.Email)
 	if err != nil {
-		if err.Error() == "email not found" {
+		if errors.Is(err, apierrors.ErrUserNotFound) {
 			// Don't reveal if email exists for security
 			c.JSON(http.StatusOK, gin.H{"message": "Se o e-mail existir, enviamos instruções e o Código de Redefinição para ele."})
 			return
