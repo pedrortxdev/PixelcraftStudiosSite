@@ -488,3 +488,27 @@ func (r *SubscriptionRepository) ListActiveSubscriptions(ctx context.Context) ([
 
 	return subscriptions, nil
 }
+
+// GetSubscriptionOwnerAndStatus returns only the owner ID and status for a subscription
+// OPTIMIZATION: Lightweight query instead of fetching full subscription object
+// Used by MessageService for efficient chat access validation
+func (r *SubscriptionRepository) GetSubscriptionOwnerAndStatus(ctx context.Context, subID uuid.UUID) (uuid.UUID, models.SubscriptionStatus, error) {
+	query := `
+		SELECT user_id, status
+		FROM subscriptions
+		WHERE id = $1
+	`
+
+	var userID uuid.UUID
+	var status models.SubscriptionStatus
+
+	err := r.db.QueryRowContext(ctx, query, subID).Scan(&userID, &status)
+	if err == sql.ErrNoRows {
+		return uuid.Nil, "", nil
+	}
+	if err != nil {
+		return uuid.Nil, "", fmt.Errorf("failed to query subscription: %w", err)
+	}
+
+	return userID, status, nil
+}

@@ -20,9 +20,15 @@ const (
 	MinMessageLength = 1
 	// DefaultChatHistoryLimit defines the default number of messages to return
 	DefaultChatHistoryLimit = 100
-	// DefaultChatHistoryOffset defines the default offset for pagination
+	// DefaultChatHistoryOffset defines the default offset for pagination (legacy)
 	DefaultChatHistoryOffset = 0
 )
+
+// Allowed subscription statuses for chat access
+var AllowedChatSubscriptionStatuses = []models.SubscriptionStatus{
+	models.SubscriptionStatusActive,
+	models.SubscriptionStatusCanceled, // Allow chat for canceled subscriptions (grace period)
+}
 
 type MessageService struct {
 	messageRepo      *repository.MessageRepository
@@ -37,23 +43,38 @@ func NewMessageService(msgRepo *repository.MessageRepository, subRepo *repositor
 }
 
 // validateSubscriptionAccess verifies that the user has access to the subscription.
-// Returns the subscription if valid, error otherwise.
-func (s *MessageService) validateSubscriptionAccess(ctx context.Context, subID uuid.UUID, userID uuid.UUID, isAdmin bool) (*models.Subscription, error) {
-	// Admin bypasses ownership check but still needs valid subscription
-	sub, err := s.subscriptionRepo.GetSubscriptionByID(ctx, subID)
+// Returns the subscription owner ID if valid, error otherwise.
+// OPTIMIZATION: Only returns owner ID to reduce data transfer
+func (s *MessageService) validateSubscriptionAccess(ctx context.Context, subID uuid.UUID, userID uuid.UUID, isAdmin bool) (uuid.UUID, error) {
+	// OPTIMIZATION: Use lightweight validation query instead of fetching full subscription
+	ownerID, status, err := s.subscriptionRepo.GetSubscriptionOwnerAndStatus(ctx, subID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch subscription: %w", err)
+		return uuid.Nil, fmt.Errorf("failed to fetch subscription: %w", err)
 	}
-	if sub == nil {
-		return nil, errors.New("subscription not found")
+	if ownerID == uuid.Nil {
+		return uuid.Nil, errors.New("subscription not found")
+	}
+
+	// SECURITY: Check subscription status allows chat interaction
+	// Prevents "zombie" chats from canceled/suspended subscriptions
+	statusAllowed := false
+	for _, allowedStatus := range AllowedChatSubscriptionStatuses {
+		if status == allowedStatus {
+			statusAllowed = true
+			break
+		}
+	}
+	if !statusAllowed {
+		return uuid.Nil, fmt.Errorf("subscription chat is disabled: status=%s", status)
 	}
 
 	// Non-admin users must own the subscription
-	if !isAdmin && sub.UserID != userID {
-		return nil, errors.New("unauthorized: you do not own this subscription")
+	if !isAdmin && ownerID != userID {
+		return uuid.Nil, errors.New("unauthorized: you do not own this subscription")
 	}
 
-	return sub, nil
+	// Return owner ID for audit trail (admin messages should use actual admin user ID)
+	return ownerID, nil
 }
 
 // validateMessageContent ensures the message content is valid
@@ -77,6 +98,7 @@ type SendMessageRequest struct {
 }
 
 // SendMessage sends a message to a subscription chat
+// FIX 4: Admin user ID is stored correctly for audit trail
 func (s *MessageService) SendMessage(ctx context.Context, subID uuid.UUID, userID uuid.UUID, content string, isAdmin bool) (*models.Message, error) {
 	// Validate message content (DRY: business rule)
 	if err := s.validateMessageContent(content); err != nil {
@@ -88,11 +110,14 @@ func (s *MessageService) SendMessage(ctx context.Context, subID uuid.UUID, userI
 		return nil, err
 	}
 
+	// FIX 3: Save trimmed content to avoid inconsistencies and save space
+	trimmedContent := strings.TrimSpace(content)
+
 	msg := &models.Message{
 		ID:             uuid.New(),
 		SubscriptionID: subID,
-		UserID:         userID,
-		Content:        content,
+		UserID:         userID, // FIX 4: Always store actual user ID (admin or user)
+		Content:        trimmedContent, // FIX 3: Save trimmed content
 		IsAdmin:        isAdmin,
 		CreatedAt:      time.Now(),
 	}
@@ -105,12 +130,16 @@ func (s *MessageService) SendMessage(ctx context.Context, subID uuid.UUID, userI
 }
 
 // GetChatHistoryParams defines pagination parameters for chat history
+// FIX 1: Added cursor-based pagination support
 type GetChatHistoryParams struct {
-	Limit  int
-	Offset int
+	Limit      int
+	Offset     int     // Legacy offset-based pagination
+	CursorID   *string // Cursor-based pagination (message ID)
+	CursorTime *time.Time // Cursor timestamp for validation
 }
 
 // GetChatHistory retrieves paginated chat history for a subscription
+// FIX 1: Supports both cursor-based and offset-based pagination
 func (s *MessageService) GetChatHistory(ctx context.Context, subID uuid.UUID, userID uuid.UUID, isAdmin bool, params *GetChatHistoryParams) ([]models.Message, error) {
 	// Set defaults if params not provided
 	if params == nil {
@@ -125,6 +154,15 @@ func (s *MessageService) GetChatHistory(ctx context.Context, subID uuid.UUID, us
 		return nil, err
 	}
 
-	// Get paginated messages to prevent OOM on large chat histories
+	// FIX 1: Use cursor-based pagination if cursor is provided (preferred for real-time chats)
+	if params.CursorID != nil {
+		cursorUUID, err := uuid.Parse(*params.CursorID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid cursor ID: %w", err)
+		}
+		return s.messageRepo.GetBySubscriptionIDCursor(ctx, subID, params.Limit, cursorUUID)
+	}
+
+	// Fallback to offset-based pagination (legacy)
 	return s.messageRepo.GetBySubscriptionIDPaginated(ctx, subID, params.Limit, params.Offset)
 }

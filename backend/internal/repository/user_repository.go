@@ -46,7 +46,9 @@ func (r *UserRepository) GetUserByID(ctx context.Context, userID string) (*model
 			COALESCE(avatar_url, ''),
 			COALESCE(is_admin, false),
 			COALESCE(preferences, '{"font": "modern", "density": "comfortable", "backgroundFilter": true}')::jsonb,
-			pgp_sym_decrypt(cpf_encrypted, current_setting('app.cpf_encryption_key')) as cpf
+			pgp_sym_decrypt(cpf_encrypted, current_setting('app.cpf_encryption_key')) as cpf,
+			COALESCE(total_spent, 0),
+			COALESCE(monthly_spent, 0)
 		FROM users 
 		WHERE id = $1
 	`
@@ -54,6 +56,7 @@ func (r *UserRepository) GetUserByID(ctx context.Context, userID string) (*model
 	var user models.User
 	var createdAt, updatedAt time.Time
 	var preferencesJSON []byte
+	var balanceFloat, totalSpentFloat, monthlySpentFloat float64
 	
 	err = r.db.QueryRowContext(ctx, query, userID).Scan(
 		&user.ID,
@@ -61,7 +64,7 @@ func (r *UserRepository) GetUserByID(ctx context.Context, userID string) (*model
 		&user.FullName,
 		&user.DiscordHandle,
 		&user.WhatsAppPhone,
-		&user.Balance,
+		&balanceFloat,
 		&user.ReferralCode,
 		&createdAt,
 		&updatedAt,
@@ -70,6 +73,8 @@ func (r *UserRepository) GetUserByID(ctx context.Context, userID string) (*model
 		&user.IsAdmin,
 		&preferencesJSON,
 		&user.CPF,
+		&totalSpentFloat,
+		&monthlySpentFloat,
 	)
 	
 	if err != nil {
@@ -81,6 +86,9 @@ func (r *UserRepository) GetUserByID(ctx context.Context, userID string) (*model
 
 	user.CreatedAt = createdAt
 	user.UpdatedAt = updatedAt
+	user.Balance = int64(balanceFloat * 100)
+	user.TotalSpent = int64(totalSpentFloat * 100)
+	user.MonthlySpent = int64(monthlySpentFloat * 100)
 
 	if len(preferencesJSON) > 0 {
 		if err := json.Unmarshal(preferencesJSON, &user.Preferences); err != nil {
@@ -183,20 +191,20 @@ func (r *UserRepository) UpdateUser(ctx context.Context, userID string, req *mod
 func (r *UserRepository) GetBalance(ctx context.Context, userID string) (int64, error) {
 	query := `SELECT balance FROM users WHERE id = $1`
 
-	var balance int64
-	err := r.db.QueryRowContext(ctx, query, userID).Scan(&balance)
+	var balanceFloat float64
+	err := r.db.QueryRowContext(ctx, query, userID).Scan(&balanceFloat)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get user balance: %w", err)
 	}
 
-	return balance, nil
+	return int64(balanceFloat * 100), nil
 }
 
 // GetBalanceTx retrieves the balance for a user within a transaction with row-level lock (in cents)
 func (r *UserRepository) GetBalanceTx(ctx context.Context, tx *sql.Tx, userID string) (int64, error) {
 	query := `SELECT balance FROM users WHERE id = $1 FOR UPDATE`
 
-	var balance int64
+	var balanceFloat float64
 	var execTx interface {
 		QueryRowContext(context.Context, string, ...interface{}) *sql.Row
 	}
@@ -205,17 +213,20 @@ func (r *UserRepository) GetBalanceTx(ctx context.Context, tx *sql.Tx, userID st
 	} else {
 		execTx = r.db
 	}
-	err := execTx.QueryRowContext(ctx, query, userID).Scan(&balance)
+	err := execTx.QueryRowContext(ctx, query, userID).Scan(&balanceFloat)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get user balance (tx): %w", err)
 	}
 
-	return balance, nil
+	return int64(balanceFloat * 100), nil
 }
 
 // UpdateBalance updates the balance for a user within a transaction (balance in cents)
 func (r *UserRepository) UpdateBalance(ctx context.Context, tx *sql.Tx, userID string, newBalance int64) error {
 	query := `UPDATE users SET balance = $1 WHERE id = $2`
+
+	// Convert cents to decimal for DB
+	balanceDecimal := float64(newBalance) / 100
 
 	// Use the transaction if provided, otherwise use the main database connection
 	var execTx interface {
@@ -228,7 +239,7 @@ func (r *UserRepository) UpdateBalance(ctx context.Context, tx *sql.Tx, userID s
 		execTx = r.db
 	}
 
-	_, err := execTx.ExecContext(ctx, query, newBalance, userID)
+	_, err := execTx.ExecContext(ctx, query, balanceDecimal, userID)
 	if err != nil {
 		return fmt.Errorf("failed to update user balance: %w", err)
 	}
@@ -240,6 +251,9 @@ func (r *UserRepository) UpdateBalance(ctx context.Context, tx *sql.Tx, userID s
 func (r *UserRepository) IncrementBalance(ctx context.Context, tx *sql.Tx, userID string, amount int64) error {
 	query := `UPDATE users SET balance = balance + $1 WHERE id = $2`
 
+	// Convert cents to decimal for DB
+	amountDecimal := float64(amount) / 100
+
 	var execTx interface {
 		ExecContext(context.Context, string, ...interface{}) (sql.Result, error)
 	}
@@ -250,11 +264,56 @@ func (r *UserRepository) IncrementBalance(ctx context.Context, tx *sql.Tx, userI
 		execTx = r.db
 	}
 
-	_, err := execTx.ExecContext(ctx, query, amount, userID)
+	_, err := execTx.ExecContext(ctx, query, amountDecimal, userID)
 	if err != nil {
 		return fmt.Errorf("failed to increment user balance: %w", err)
 	}
 	
+	return nil
+}
+
+// BatchIncrementBalances atomically increments balance for multiple users in a single query.
+// userIDs and amountsCents must have the same length. Amounts are in cents.
+func (r *UserRepository) BatchIncrementBalances(ctx context.Context, tx *sql.Tx, userIDs []string, amountsCents []int64) error {
+	if len(userIDs) != len(amountsCents) {
+		return fmt.Errorf("userIDs and amountsCents must have the same length")
+	}
+	if len(userIDs) == 0 {
+		return nil
+	}
+
+	// Build a multi-row VALUES clause for a single UPDATE
+	// UPDATE users SET balance = balance + v.amount FROM (VALUES ($1,$2), ($3,$4), ...) AS v(id, amount) WHERE users.id = v.id::uuid
+	valuesClauses := make([]string, 0, len(userIDs))
+	args := make([]interface{}, 0, len(userIDs)*2)
+	for i, uid := range userIDs {
+		amountDecimal := float64(amountsCents[i]) / 100
+		argIdx := i * 2
+		valuesClauses = append(valuesClauses, fmt.Sprintf("($%d, $%d)", argIdx+1, argIdx+2))
+		args = append(args, uid, amountDecimal)
+	}
+
+	query := fmt.Sprintf(`
+		UPDATE users 
+		SET balance = balance + v.amount 
+		FROM (VALUES %s) AS v(id, amount) 
+		WHERE users.id = v.id::uuid
+	`, strings.Join(valuesClauses, ", "))
+
+	var execTx interface {
+		ExecContext(context.Context, string, ...interface{}) (sql.Result, error)
+	}
+	if tx != nil {
+		execTx = tx
+	} else {
+		execTx = r.db
+	}
+
+	_, err := execTx.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to batch increment balances: %w", err)
+	}
+
 	return nil
 }
 
@@ -296,11 +355,16 @@ func (r *UserRepository) CreateUser(ctx context.Context, user *models.User, pass
 	`
 
 	var createdAt, updatedAt time.Time
+	var balanceFloat float64
+	
+	// Convert cents to decimal for DB
+	balanceDecimal := float64(user.Balance) / 100
+
 	err := r.db.QueryRowContext(ctx, query,
 		user.ID, user.Email, user.Username, passwordHash, user.FullName,
-		user.ReferralCode, referredByCode, user.Balance, user.DiscordHandle, user.WhatsAppPhone,
+		user.ReferralCode, referredByCode, balanceDecimal, user.DiscordHandle, user.WhatsAppPhone,
 	).Scan(
-		&user.ID, &user.Email, &user.FullName, &user.ReferralCode, &user.Balance,
+		&user.ID, &user.Email, &user.FullName, &user.ReferralCode, &balanceFloat,
 		&user.IsAdmin, &createdAt, &updatedAt,
 	)
 
@@ -308,6 +372,7 @@ func (r *UserRepository) CreateUser(ctx context.Context, user *models.User, pass
 		return fmt.Errorf("failed to create user: %w", err)
 	}
 
+	user.Balance = int64(balanceFloat * 100)
 	user.CreatedAt = createdAt
 	user.UpdatedAt = updatedAt
 	return nil
@@ -316,21 +381,22 @@ func (r *UserRepository) CreateUser(ctx context.Context, user *models.User, pass
 // GetUserByEmail retrieves a user by their email address including password hash
 func (r *UserRepository) GetUserByEmail(ctx context.Context, email string) (*models.UserWithPassword, error) {
 	query := `
-		SELECT id, email, password_hash, full_name, referral_code, balance, is_admin, created_at, updated_at, username, discord_handle, whatsapp_phone, avatar_url
+		SELECT id, email, password_hash, full_name, referral_code, balance, is_admin, created_at, updated_at, username, discord_handle, whatsapp_phone, avatar_url, 
+		       COALESCE(total_spent, 0), COALESCE(monthly_spent, 0)
 		FROM users
 		WHERE email = $1
 	`
 
 	var user models.UserWithPassword
 	var fullName, referralCode, username, discordHandle, whatsappPhone, avatarUrl sql.NullString
-	var balance int64
+	var balanceFloat, totalSpentFloat, monthlySpentFloat float64
 	var isAdmin bool
 	var createdAt, updatedAt time.Time
 	var hashedPassword []byte
 
 	err := r.db.QueryRowContext(ctx, query, email).Scan(
-		&user.ID, &user.Email, &hashedPassword, &fullName, &referralCode, &balance, &isAdmin, &createdAt, &updatedAt,
-		&username, &discordHandle, &whatsappPhone, &avatarUrl,
+		&user.ID, &user.Email, &hashedPassword, &fullName, &referralCode, &balanceFloat, &isAdmin, &createdAt, &updatedAt,
+		&username, &discordHandle, &whatsappPhone, &avatarUrl, &totalSpentFloat, &monthlySpentFloat,
 	)
 
 	if err == sql.ErrNoRows {
@@ -343,7 +409,9 @@ func (r *UserRepository) GetUserByEmail(ctx context.Context, email string) (*mod
 	user.PasswordHash = hashedPassword
 	user.FullName = fullName.String
 	user.ReferralCode = referralCode.String
-	user.Balance = balance
+	user.Balance = int64(balanceFloat * 100)
+	user.TotalSpent = int64(totalSpentFloat * 100)
+	user.MonthlySpent = int64(monthlySpentFloat * 100)
 	user.IsAdmin = isAdmin
 	user.CreatedAt = createdAt
 	user.UpdatedAt = updatedAt
@@ -456,6 +524,7 @@ func (r *UserRepository) ListAll(ctx context.Context, page, limit int, search st
 	
 	// Query with subquery to get highest role
 	baseQuery := `SELECT u.id, u.email, COALESCE(u.full_name, ''), COALESCE(u.discord_handle, ''), COALESCE(u.whatsapp_phone, ''), COALESCE(u.balance, 0), COALESCE(u.referral_code, ''), u.created_at, u.updated_at, COALESCE(u.username, ''), COALESCE(u.avatar_url, ''), COALESCE(u.is_admin, false), COALESCE(u.preferences, '{"font": "modern", "density": "comfortable", "backgroundFilter": true}')::jsonb, pgp_sym_decrypt(u.cpf_encrypted, current_setting('app.cpf_encryption_key')),
+		COALESCE(u.total_spent, 0), COALESCE(u.monthly_spent, 0),
 		(SELECT ur.role FROM user_roles ur WHERE ur.user_id = u.id 
 		 ORDER BY CASE ur.role 
 		   WHEN 'DIRECTION' THEN 8
@@ -513,13 +582,14 @@ func (r *UserRepository) ListAll(ctx context.Context, page, limit int, search st
 		var createdAt, updatedAt time.Time
 		var highestRole *string
 		var preferencesJSON []byte
+		var balanceFloat, totalSpentFloat, monthlySpentFloat float64
 		if err := rows.Scan(
 			&user.ID,
 			&user.Email,
 			&user.FullName,
 			&user.DiscordHandle,
 			&user.WhatsAppPhone,
-			&user.Balance,
+			&balanceFloat,
 			&user.ReferralCode,
 			&createdAt,
 			&updatedAt,
@@ -528,12 +598,17 @@ func (r *UserRepository) ListAll(ctx context.Context, page, limit int, search st
 			&user.IsAdmin,
 			&preferencesJSON,
 			&user.CPF,
+			&totalSpentFloat,
+			&monthlySpentFloat,
 			&highestRole,
 		); err != nil {
 			return nil, 0, fmt.Errorf("failed to scan user: %w", err)
 		}
 		user.CreatedAt = createdAt
 		user.UpdatedAt = updatedAt
+		user.Balance = int64(balanceFloat * 100)
+		user.TotalSpent = int64(totalSpentFloat * 100)
+		user.MonthlySpent = int64(monthlySpentFloat * 100)
 		if len(preferencesJSON) > 0 {
 			if err := json.Unmarshal(preferencesJSON, &user.Preferences); err != nil {
 				log.Printf("Warning: failed to unmarshal user preferences in list: %v", err)

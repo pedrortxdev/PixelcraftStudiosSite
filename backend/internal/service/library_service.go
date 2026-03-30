@@ -15,17 +15,20 @@ type LibraryService struct {
 	libraryRepo *repository.LibraryRepository
 	productRepo *repository.ProductRepository
 	fileService *FileService
+	apiBaseURL  string // Base URL for public API endpoints (configurable)
 }
 
 func NewLibraryService(
 	libraryRepo *repository.LibraryRepository,
 	productRepo *repository.ProductRepository,
 	fileService *FileService,
+	apiBaseURL string,
 ) *LibraryService {
 	return &LibraryService{
 		libraryRepo: libraryRepo,
 		productRepo: productRepo,
 		fileService: fileService,
+		apiBaseURL:  apiBaseURL,
 	}
 }
 
@@ -82,11 +85,11 @@ func (s *LibraryService) GetDownloadInfo(ctx context.Context, userID uuid.UUID, 
 		return nil, fmt.Errorf("failed to generate download token: %w", err)
 	}
 
-	// 4. Return ephemeral URL (not static!)
+	// 4. Return ephemeral URL (not static!) using configurable base URL
 	return &DownloadInfo{
 		ProductID:       productID,
 		ProductName:     product.Name,
-		DownloadURL:     fmt.Sprintf("https://api.pixelcraft-studio.store/api/v1/files/onedownload/%s", token.Token.String()),
+		DownloadURL:     fmt.Sprintf("%s/api/v1/files/onedownload/%s", s.apiBaseURL, token.Token.String()),
 		Token:           token.Token,
 		ExpiresAt:       token.ExpiresAt,
 		MaxDownloads:    token.MaxDownloads,

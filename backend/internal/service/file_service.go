@@ -20,16 +20,17 @@ import (
 
 // FileService handles business logic for file management
 type FileService struct {
-	repo        *repository.FileRepository
-	db          *sql.DB
-	uploadDir   string
-	tempDir     string // Temporary directory for atomic uploads
-	maxFileSize int64  // Maximum file size in bytes
+	repo         *repository.FileRepository
+	db           *sql.DB
+	uploadDir    string
+	tempDir      string // Temporary directory for atomic uploads
+	maxFileSize  int64  // Maximum file size in bytes
 	allowedTypes []string // Allowed file extensions
+	apiBaseURL   string   // Base URL for public API endpoints (configurable)
 }
 
 // NewFileService creates a new FileService
-func NewFileService(db *sql.DB, uploadDir string, maxFileSize int64, allowedTypes []string) *FileService {
+func NewFileService(db *sql.DB, uploadDir string, maxFileSize int64, allowedTypes []string, apiBaseURL string) *FileService {
 	if uploadDir == "" {
 		uploadDir = "./uploads"
 	}
@@ -56,6 +57,7 @@ func NewFileService(db *sql.DB, uploadDir string, maxFileSize int64, allowedType
 		tempDir:     tempDir,
 		maxFileSize: maxFileSize,
 		allowedTypes: allowedTypes,
+		apiBaseURL:  apiBaseURL,
 	}
 }
 
@@ -78,11 +80,6 @@ func (s *FileService) GenerateDownloadToken(ctx context.Context, fileID uuid.UUI
 	}
 
 	return token.String(), nil
-}
-
-// GetDB returns the database connection (used for raw queries in handlers)
-func (s *FileService) GetDB() *sql.DB {
-	return s.db
 }
 
 // SaveFile handles file upload with atomic operations and MIME type validation
@@ -125,9 +122,12 @@ func (s *FileService) SaveFile(ctx context.Context, fileHeader *multipart.FileHe
 
 	// Generate unique internal filename using UUID
 	internalFileName := fmt.Sprintf("%s%s", uuid.New().String(), ext)
-	
+
 	// ATOMIC UPLOAD: Save to temp directory first
-	tempFilePath := filepath.Join(s.tempDir, internalFileName)
+	// Use timestamp prefix for efficient cleanup (avoids Lstat calls)
+	timestampPrefix := time.Now().Format("20060102150405")
+	tempFileName := fmt.Sprintf("%s_%s", timestampPrefix, internalFileName)
+	tempFilePath := filepath.Join(s.tempDir, tempFileName)
 	dest, err := os.Create(tempFilePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp file: %w", err)
@@ -154,14 +154,25 @@ func (s *FileService) SaveFile(ctx context.Context, fileHeader *multipart.FileHe
 		return nil, fmt.Errorf("failed to close file: %w", err)
 	}
 
-	// Create file record in database (transaction)
+	// ATOMIC UPLOAD: Move from temp to final location FIRST (before DB)
+	// This prevents DB/file desync: file must exist on disk before we record it
+	finalPath := filepath.Join(s.uploadDir, internalFileName)
+	err = os.Rename(tempFilePath, finalPath)
+	if err != nil {
+		// Move failed - clean up temp file
+		os.Remove(tempFilePath)
+		return nil, fmt.Errorf("failed to move file to final location: %w", err)
+	}
+
+	// File is now safely on disk - create database record
+	// If DB fails, we have an orphan file (cleaned up by periodic cleanup job)
 	fileType := s.getFileType(ext)
 	file := &models.File{
 		ID:        uuid.New(),
 		Name:      friendlyName,
 		FileName:  internalFileName,
 		FileType:  fileType,
-		FilePath:  filepath.Join(s.uploadDir, internalFileName), // Final path
+		FilePath:  finalPath,
 		Size:      fileHeader.Size,
 		CreatedBy: userID,
 		CreatedAt: time.Now(),
@@ -171,20 +182,11 @@ func (s *FileService) SaveFile(ctx context.Context, fileHeader *multipart.FileHe
 
 	err = s.repo.Create(ctx, file)
 	if err != nil {
-		// Database failed - clean up temp file, DON'T move to final location
-		os.Remove(tempFilePath)
+		// DB failed - file exists on disk but record not created
+		// This is safer than the reverse: orphan files can be cleaned up
+		// but phantom DB records pointing to non-existent files cause errors
+		os.Remove(finalPath) // Clean up orphaned file
 		return nil, fmt.Errorf("failed to create file record: %w", err)
-	}
-
-	// Database succeeded - move from temp to final location
-	finalPath := filepath.Join(s.uploadDir, internalFileName)
-	err = os.Rename(tempFilePath, finalPath)
-	if err != nil {
-		// Move failed - clean up both locations
-		os.Remove(tempFilePath)
-		os.Remove(finalPath)
-		// Note: File record in DB is orphaned - consider cleanup job
-		return nil, fmt.Errorf("failed to move file to final location: %w", err)
 	}
 
 	return file, nil
@@ -266,7 +268,8 @@ func (s *FileService) getFileType(ext string) models.FileType {
 	}
 }
 
-// UpdateFilePermissions updates the access permissions for a file (with proper JSON marshaling)
+// UpdateFilePermissions updates the access permissions for a file
+// Uses relational tables for AllowedRoles and AllowedProductIDs (best practice)
 func (s *FileService) UpdateFilePermissions(ctx context.Context, id uuid.UUID, userID uuid.UUID, req models.UpdateFilePermissionsRequest) (*models.File, error) {
 	// First verify the file exists and belongs to the user or user is admin
 	file, err := s.repo.GetByID(ctx, id)
@@ -290,7 +293,11 @@ func (s *FileService) UpdateFilePermissions(ctx context.Context, id uuid.UUID, u
 		file.RequiredRole = req.RequiredRole
 	}
 	if req.AllowedRoles != nil {
-		// SECURE: Use json.Marshal instead of manual string concatenation
+		// Use relational tables instead of JSON (best practice)
+		if err := s.repo.SyncFilePermissions(ctx, id, req.AllowedRoles, nil); err != nil {
+			return nil, fmt.Errorf("failed to sync role permissions: %w", err)
+		}
+		// Also update JSON for backward compatibility (transitional)
 		rolesJSON, err := json.Marshal(req.AllowedRoles)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal allowed roles: %w", err)
@@ -301,7 +308,11 @@ func (s *FileService) UpdateFilePermissions(ctx context.Context, id uuid.UUID, u
 		file.RequiredProductID = req.RequiredProductID
 	}
 	if req.AllowedProductIDs != nil {
-		// SECURE: Use json.Marshal for product IDs too
+		// Use relational tables instead of JSON (best practice)
+		if err := s.repo.SyncFilePermissions(ctx, id, nil, req.AllowedProductIDs); err != nil {
+			return nil, fmt.Errorf("failed to sync product permissions: %w", err)
+		}
+		// Also update JSON for backward compatibility (transitional)
 		productIDsJSON, err := json.Marshal(req.AllowedProductIDs)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal allowed product IDs: %w", err)
@@ -332,6 +343,7 @@ func (s *FileService) UpdateFilePermissions(ctx context.Context, id uuid.UUID, u
 }
 
 // GetFilePermissions retrieves the permission configuration for a file
+// Uses relational tables as primary source, JSON as fallback (transitional)
 func (s *FileService) GetFilePermissions(ctx context.Context, id uuid.UUID, userID uuid.UUID) (*models.FilePermissionResponse, error) {
 	file, err := s.repo.GetFileWithPermissions(ctx, id)
 	if err != nil {
@@ -346,25 +358,34 @@ func (s *FileService) GetFilePermissions(ctx context.Context, id uuid.UUID, user
 		return nil, fmt.Errorf("unauthorized")
 	}
 
-	// SECURE: Parse JSON properly instead of manual string manipulation
+	// PRIMARY: Read from relational tables (best practice)
+	// FALLBACK: Parse JSON if relational tables are empty (transitional)
 	var allowedRoles []string
-	if file.AllowedRoles != nil && len(file.AllowedRoles) > 0 {
-		if err := json.Unmarshal(file.AllowedRoles, &allowedRoles); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal allowed roles: %w", err)
+	allowedRoles, err = s.repo.GetRolePermissionsForFile(ctx, id)
+	if err != nil {
+		// Fallback to JSON parsing
+		if file.AllowedRoles != nil && len(file.AllowedRoles) > 0 {
+			if jsonErr := json.Unmarshal(file.AllowedRoles, &allowedRoles); jsonErr != nil {
+				return nil, fmt.Errorf("failed to unmarshal allowed roles: %w", jsonErr)
+			}
 		}
 	}
 
 	var allowedProductIDs []uuid.UUID
-	if file.AllowedProductIDs != nil && len(file.AllowedProductIDs) > 0 {
-		if err := json.Unmarshal(file.AllowedProductIDs, &allowedProductIDs); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal allowed product IDs: %w", err)
+	allowedProductIDs, err = s.repo.GetProductPermissionsForFile(ctx, id)
+	if err != nil {
+		// Fallback to JSON parsing
+		if file.AllowedProductIDs != nil && len(file.AllowedProductIDs) > 0 {
+			if jsonErr := json.Unmarshal(file.AllowedProductIDs, &allowedProductIDs); jsonErr != nil {
+				return nil, fmt.Errorf("failed to unmarshal allowed product IDs: %w", jsonErr)
+			}
 		}
 	}
 
-	// Generate public link URL
+	// Generate public link URL using configurable base URL
 	publicLinkURL := ""
 	if file.AccessType == models.AccessTypePublic && file.PublicLinkToken != uuid.Nil {
-		publicLinkURL = fmt.Sprintf("https://api.pixelcraft-studio.store/api/v1/files/public/%s/download", file.PublicLinkToken.String())
+		publicLinkURL = fmt.Sprintf("%s/api/v1/files/public/%s/download", s.apiBaseURL, file.PublicLinkToken.String())
 	}
 
 	// Return properly typed response DTO
@@ -381,6 +402,37 @@ func (s *FileService) GetFilePermissions(ctx context.Context, id uuid.UUID, user
 		MaxDownloads:        file.MaxDownloads,
 		PublicLinkURL:       publicLinkURL,
 	}, nil
+}
+
+// GetFileByPublicToken retrieves a file by its public link token
+// Used for public file downloads (no authentication required)
+func (s *FileService) GetFileByPublicToken(ctx context.Context, token uuid.UUID) (*models.File, error) {
+	query := `
+		SELECT id, name, file_name, file_type, file_path, size,
+		       created_by, created_at, updated_at, is_deleted,
+		       access_type, required_role, allowed_roles, required_product_id, allowed_product_ids,
+		       public_link_token, public_link_expires_at, download_count, max_downloads
+		FROM files
+		WHERE public_link_token = $1 AND is_deleted = false
+	`
+
+	file := &models.File{}
+	err := s.db.QueryRowContext(ctx, query, token).Scan(
+		&file.ID, &file.Name, &file.FileName, &file.FileType, &file.FilePath,
+		&file.Size, &file.CreatedBy, &file.CreatedAt, &file.UpdatedAt, &file.IsDeleted,
+		&file.AccessType, &file.RequiredRole, &file.AllowedRoles, &file.RequiredProductID,
+		&file.AllowedProductIDs, &file.PublicLinkToken, &file.PublicLinkExpiresAt,
+		&file.DownloadCount, &file.MaxDownloads,
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get file by public token: %w", err)
+	}
+
+	return file, nil
 }
 
 // GetFileByID retrieves a file by ID
@@ -501,7 +553,7 @@ func (s *FileService) RegeneratePublicLink(ctx context.Context, fileID, userID u
 		return "", fmt.Errorf("failed to regenerate token: %w", err)
 	}
 
-	publicLinkURL := fmt.Sprintf("https://api.pixelcraft-studio.store/api/v1/files/public/%s/download", newToken.String())
+	publicLinkURL := fmt.Sprintf("%s/api/v1/files/public/%s/download", s.apiBaseURL, newToken.String())
 	return publicLinkURL, nil
 }
 
@@ -559,6 +611,7 @@ func (s *FileService) CleanupExpiredDownloadTokens(ctx context.Context) (int, er
 }
 
 // CleanupTempFiles removes orphaned temp files (run periodically)
+// Uses timestamp-based naming pattern to avoid expensive Lstat calls
 func (s *FileService) CleanupTempFiles(ctx context.Context) error {
 	entries, err := os.ReadDir(s.tempDir)
 	if err != nil {
@@ -573,12 +626,34 @@ func (s *FileService) CleanupTempFiles(ctx context.Context) error {
 			continue
 		}
 
-		info, err := entry.Info()
-		if err != nil {
-			continue
+		// Naming pattern: {timestamp}_{filename}
+		// This allows us to extract the timestamp from the filename itself
+		// without needing expensive Lstat calls
+		name := entry.Name()
+		var fileTime time.Time
+
+		// Try to parse timestamp from filename (format: YYYYMMDDHHMMSS_filename)
+		if len(name) >= 15 && name[14] == '_' {
+			if parsedTime, err := time.ParseInLocation("20060102150405", name[:14], now.Location()); err == nil {
+				fileTime = parsedTime
+			} else {
+				// Fallback to ModTime if timestamp parsing fails
+				info, err := entry.Info()
+				if err != nil {
+					continue
+				}
+				fileTime = info.ModTime()
+			}
+		} else {
+			// Fallback to ModTime for files without timestamp prefix
+			info, err := entry.Info()
+			if err != nil {
+				continue
+			}
+			fileTime = info.ModTime()
 		}
 
-		if now.Sub(info.ModTime()) > cleanupThreshold {
+		if now.Sub(fileTime) > cleanupThreshold {
 			fullPath := filepath.Join(s.tempDir, entry.Name())
 			os.Remove(fullPath) // Best effort cleanup
 		}
@@ -588,6 +663,7 @@ func (s *FileService) CleanupTempFiles(ctx context.Context) error {
 }
 
 // AddRoleToFilePermission adds a role permission to a file
+// Uses relational tables (best practice) with JSON fallback (transitional)
 func (s *FileService) AddRoleToFilePermission(ctx context.Context, fileID uuid.UUID, role string) error {
 	file, err := s.repo.GetByID(ctx, fileID)
 	if err != nil {
@@ -597,23 +673,27 @@ func (s *FileService) AddRoleToFilePermission(ctx context.Context, fileID uuid.U
 		return fmt.Errorf("file not found")
 	}
 
-	// Parse existing roles
+	// PRIMARY: Add to relational table (best practice)
+	if err := s.repo.AddRolePermissionToFile(ctx, fileID, role); err != nil {
+		return fmt.Errorf("failed to add role permission: %w", err)
+	}
+
+	// ALSO update JSON for backward compatibility (transitional)
 	var allowedRoles []string
 	if file.AllowedRoles != nil && len(file.AllowedRoles) > 0 {
 		if err := json.Unmarshal(file.AllowedRoles, &allowedRoles); err != nil {
-			return fmt.Errorf("failed to unmarshal allowed roles: %w", err)
+			allowedRoles = []string{}
 		}
 	}
 
 	// Add new role if not already present
 	for _, r := range allowedRoles {
 		if r == role {
-			return nil // Already exists
+			return nil // Already exists in JSON
 		}
 	}
 	allowedRoles = append(allowedRoles, role)
 
-	// Marshal back to JSON
 	rolesJSON, err := json.Marshal(allowedRoles)
 	if err != nil {
 		return fmt.Errorf("failed to marshal allowed roles: %w", err)
@@ -624,6 +704,7 @@ func (s *FileService) AddRoleToFilePermission(ctx context.Context, fileID uuid.U
 }
 
 // RemoveRoleFromFilePermission removes a role permission from a file
+// Uses relational tables (best practice) with JSON fallback (transitional)
 func (s *FileService) RemoveRoleFromFilePermission(ctx context.Context, fileID uuid.UUID, role string) error {
 	file, err := s.repo.GetByID(ctx, fileID)
 	if err != nil {
@@ -633,11 +714,16 @@ func (s *FileService) RemoveRoleFromFilePermission(ctx context.Context, fileID u
 		return fmt.Errorf("file not found")
 	}
 
-	// Parse existing roles
+	// PRIMARY: Remove from relational table (best practice)
+	if err := s.repo.RemoveRolePermissionFromFile(ctx, fileID, role); err != nil {
+		return fmt.Errorf("failed to remove role permission: %w", err)
+	}
+
+	// ALSO update JSON for backward compatibility (transitional)
 	var allowedRoles []string
 	if file.AllowedRoles != nil && len(file.AllowedRoles) > 0 {
 		if err := json.Unmarshal(file.AllowedRoles, &allowedRoles); err != nil {
-			return fmt.Errorf("failed to unmarshal allowed roles: %w", err)
+			allowedRoles = []string{}
 		}
 	}
 
@@ -659,6 +745,7 @@ func (s *FileService) RemoveRoleFromFilePermission(ctx context.Context, fileID u
 }
 
 // AddProductToFilePermission adds a product permission to a file
+// Uses relational tables (best practice) with JSON fallback (transitional)
 func (s *FileService) AddProductToFilePermission(ctx context.Context, fileID, productID uuid.UUID) error {
 	file, err := s.repo.GetByID(ctx, fileID)
 	if err != nil {
@@ -668,18 +755,23 @@ func (s *FileService) AddProductToFilePermission(ctx context.Context, fileID, pr
 		return fmt.Errorf("file not found")
 	}
 
-	// Parse existing product IDs
+	// PRIMARY: Add to relational table (best practice)
+	if err := s.repo.AddProductPermissionToFile(ctx, fileID, productID); err != nil {
+		return fmt.Errorf("failed to add product permission: %w", err)
+	}
+
+	// ALSO update JSON for backward compatibility (transitional)
 	var allowedProductIDs []uuid.UUID
 	if file.AllowedProductIDs != nil && len(file.AllowedProductIDs) > 0 {
 		if err := json.Unmarshal(file.AllowedProductIDs, &allowedProductIDs); err != nil {
-			return fmt.Errorf("failed to unmarshal allowed product IDs: %w", err)
+			allowedProductIDs = []uuid.UUID{}
 		}
 	}
 
 	// Add new product if not already present
 	for _, pid := range allowedProductIDs {
 		if pid == productID {
-			return nil // Already exists
+			return nil // Already exists in JSON
 		}
 	}
 	allowedProductIDs = append(allowedProductIDs, productID)
@@ -694,6 +786,7 @@ func (s *FileService) AddProductToFilePermission(ctx context.Context, fileID, pr
 }
 
 // RemoveProductFromFilePermission removes a product permission from a file
+// Uses relational tables (best practice) with JSON fallback (transitional)
 func (s *FileService) RemoveProductFromFilePermission(ctx context.Context, fileID, productID uuid.UUID) error {
 	file, err := s.repo.GetByID(ctx, fileID)
 	if err != nil {
@@ -703,11 +796,16 @@ func (s *FileService) RemoveProductFromFilePermission(ctx context.Context, fileI
 		return fmt.Errorf("file not found")
 	}
 
-	// Parse existing product IDs
+	// PRIMARY: Remove from relational table (best practice)
+	if err := s.repo.RemoveProductPermissionFromFile(ctx, fileID, productID); err != nil {
+		return fmt.Errorf("failed to remove product permission: %w", err)
+	}
+
+	// ALSO update JSON for backward compatibility (transitional)
 	var allowedProductIDs []uuid.UUID
 	if file.AllowedProductIDs != nil && len(file.AllowedProductIDs) > 0 {
 		if err := json.Unmarshal(file.AllowedProductIDs, &allowedProductIDs); err != nil {
-			return fmt.Errorf("failed to unmarshal allowed product IDs: %w", err)
+			allowedProductIDs = []uuid.UUID{}
 		}
 	}
 

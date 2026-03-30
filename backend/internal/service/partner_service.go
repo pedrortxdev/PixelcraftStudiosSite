@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,14 +17,16 @@ import (
 type PartnerService struct {
 	roleRepo        *repository.RoleRepository
 	transactionRepo *repository.TransactionRepository
+	userRepo        *repository.UserRepository
 	db              *sql.DB
 }
 
 // NewPartnerService creates a new partner service
-func NewPartnerService(roleRepo *repository.RoleRepository, transactionRepo *repository.TransactionRepository, db *sql.DB) *PartnerService {
+func NewPartnerService(roleRepo *repository.RoleRepository, transactionRepo *repository.TransactionRepository, userRepo *repository.UserRepository, db *sql.DB) *PartnerService {
 	return &PartnerService{
 		roleRepo:        roleRepo,
 		transactionRepo: transactionRepo,
+		userRepo:        userRepo,
 		db:              db,
 	}
 }
@@ -37,11 +40,12 @@ func NewPartnerService(roleRepo *repository.RoleRepository, transactionRepo *rep
 // - Minimum distribution: 1 cent (if share < 1 cent, NO partners receive anything)
 // - All updates are atomic: either all partners receive, or none do (rollback on failure)
 // - Each credit creates a transaction record for audit trail
+// - Partners are sorted by UUID to prevent deadlocks under concurrent execution
+// - Remainder cents from integer division are assigned to the first partner
 //
 // NOTE: All amounts are in CENTS (int64) to avoid float precision issues
 func (s *PartnerService) DistributePartnerProfits(ctx context.Context, saleAmountCents int64, excludeUserID string) error {
 	// Calculate 1% of the sale (total commission pool in cents)
-	// Using integer division: 1% = divide by 100
 	partnerShareCents := saleAmountCents / 100
 
 	if partnerShareCents <= 0 {
@@ -60,7 +64,6 @@ func (s *PartnerService) DistributePartnerProfits(ctx context.Context, saleAmoun
 	}
 
 	// Filter out the buyer from the partner list BEFORE calculating shares
-	// This ensures correct math: we divide by actual recipients, not total partners
 	eligiblePartners := make([]string, 0, len(partnerIDs))
 	for _, pid := range partnerIDs {
 		if pid != excludeUserID {
@@ -68,83 +71,80 @@ func (s *PartnerService) DistributePartnerProfits(ctx context.Context, saleAmoun
 		}
 	}
 
-	// If buyer was the only partner, nothing to distribute
 	if len(eligiblePartners) == 0 {
 		log.Printf("No eligible partners for distribution (buyer was the only partner)")
 		return nil
 	}
 
+	// DEADLOCK PREVENTION: Always sort partner IDs to guarantee deterministic lock order.
+	// If two concurrent transactions update the same partners, they will both acquire
+	// row-level locks in the exact same order, making deadlocks impossible.
+	sort.Strings(eligiblePartners)
+
 	// Calculate share per partner using INTEGER division (floor division)
-	// This automatically rounds DOWN to avoid precision issues
-	sharePerPartnerCents := partnerShareCents / int64(len(eligiblePartners))
+	numPartners := int64(len(eligiblePartners))
+	sharePerPartnerCents := partnerShareCents / numPartners
 
 	// MINIMUM DISTRIBUTION RULE:
 	// If share per partner is less than 1 cent, NO partners receive anything.
-	// This prevents micro-dust amounts and database pollution.
 	if sharePerPartnerCents < 1 {
 		log.Printf("Skipping distribution: share per partner (%d cents) is below minimum threshold", sharePerPartnerCents)
 		return nil
 	}
 
+	// ROUNDING REMAINDER: Calculate the "dust" that would otherwise vanish.
+	// Assign it to the first partner in the sorted list (deterministic).
+	remainderCents := partnerShareCents % numPartners
+
 	// Start a database transaction for atomic updates
-	// Either ALL partners receive their share, or NONE do (rollback on any failure)
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer tx.Rollback() // Rollback if commit fails or we return early
+	defer tx.Rollback()
 
-	// Track total distributed for logging (in cents)
+	// Pre-build all transaction records and balance amounts for batch operations
+	now := time.Now()
+	transactions := make([]*models.Transaction, 0, len(eligiblePartners))
+	userIDs := make([]string, 0, len(eligiblePartners))
+	amounts := make([]int64, 0, len(eligiblePartners))
 	totalDistributedCents := int64(0)
 
-	// Distribute to each eligible partner WITH transaction record
-	for _, partnerID := range eligiblePartners {
-		// Parse partner UUID for transaction record
+	for i, partnerID := range eligiblePartners {
 		partnerUUID, err := uuid.Parse(partnerID)
 		if err != nil {
 			return fmt.Errorf("invalid partner UUID %s: %w", partnerID, err)
 		}
 
-		// 1. Create transaction record FIRST (audit trail)
-		now := time.Now()
-		transaction := &models.Transaction{
-			ID:             uuid.New(),
-			UserID:         partnerUUID,
-			Amount:         sharePerPartnerCents,
-			Status:         models.TransactionStatusCompleted,
-			Type:           models.TransactionTypePartnerShare,
-			AdjustmentType: nil, // Not an adjustment, it's a partner share
-			CreatedAt:      now,
-			UpdatedAt:      now,
+		// First partner gets the remainder cents (rounding correction)
+		share := sharePerPartnerCents
+		if i == 0 && remainderCents > 0 {
+			share += remainderCents
 		}
 
-		// Insert transaction record
-		insertQuery := `
-			INSERT INTO transactions (id, user_id, amount, status, type, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)
-		`
-		_, err = tx.ExecContext(ctx, insertQuery,
-			transaction.ID,
-			transaction.UserID,
-			transaction.Amount,
-			transaction.Status,
-			transaction.Type,
-			transaction.CreatedAt,
-			transaction.UpdatedAt,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to create transaction record for partner %s: %w", partnerID, err)
-		}
+		transactions = append(transactions, &models.Transaction{
+			ID:        uuid.New(),
+			UserID:    partnerUUID,
+			Amount:    share,
+			Status:    models.TransactionStatusCompleted,
+			Type:      models.TransactionTypePartnerShare,
+			CreatedAt: now,
+			UpdatedAt: now,
+		})
 
-		// 2. Update user balance (atomic within same transaction)
-		balanceQuery := `UPDATE users SET balance = balance + $1 WHERE id = $2`
-		_, err = tx.ExecContext(ctx, balanceQuery, sharePerPartnerCents, partnerID)
-		if err != nil {
-			return fmt.Errorf("failed to update balance for partner %s: %w", partnerID, err)
-		}
+		userIDs = append(userIDs, partnerID)
+		amounts = append(amounts, share)
+		totalDistributedCents += share
+	}
 
-		totalDistributedCents += sharePerPartnerCents
-		log.Printf("Partner %s received %d cents from sale of %d cents", partnerID, sharePerPartnerCents, saleAmountCents)
+	// BATCH INSERT: One single multi-row INSERT for all transaction records (not N inserts)
+	if err := s.transactionRepo.BatchInsertPartnerTransactions(ctx, tx, transactions); err != nil {
+		return fmt.Errorf("failed to batch insert partner transactions: %w", err)
+	}
+
+	// BATCH UPDATE: One single UPDATE for all partner balances (not N updates)
+	if err := s.userRepo.BatchIncrementBalances(ctx, tx, userIDs, amounts); err != nil {
+		return fmt.Errorf("failed to batch update partner balances: %w", err)
 	}
 
 	// Commit the transaction: all partners receive or none do
@@ -152,8 +152,8 @@ func (s *PartnerService) DistributePartnerProfits(ctx context.Context, saleAmoun
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	log.Printf("Partner profit distribution completed: %d cents distributed to %d partners from sale of %d cents",
-		totalDistributedCents, len(eligiblePartners), saleAmountCents)
+	log.Printf("Partner profit distribution completed: %d cents distributed to %d partners from sale of %d cents (remainder %d cents to first partner)",
+		totalDistributedCents, len(eligiblePartners), saleAmountCents, remainderCents)
 
 	return nil
 }

@@ -70,9 +70,9 @@ func main() {
 
 	// Initialize services
 	// Create Email Service with DB access for system settings
-	emailService := service.NewEmailService(db.DB)
+	emailService := service.NewEmailService(db.DB, cfg.EmailEncryptionKey)
 	permissionService := service.NewPermissionService(permissionRepo)
-	
+
 	authService := service.NewAuthService(userRepo, db.DB, struct{ Secret string }{Secret: cfg.JWT.Secret})
 	userService := service.NewUserService(userRepo, cfg.CPFEncryptionKey)
 	// File Service and Handler (with upload configuration)
@@ -81,7 +81,7 @@ func main() {
 		".png", ".jpg", ".jpeg", ".pdf",  // Imagens e documentos
 		".txt", ".json", ".js",           // Arquivos de texto e código
 	}
-	fileService := service.NewFileService(db.DB, "./uploads", 500*1024*1024, allowedTypes) // 500MB max
+	fileService := service.NewFileService(db.DB, "./uploads", 500*1024*1024, allowedTypes, cfg.APIBaseURL)
 	productService := service.NewProductService(db.DB, cfg, fileService)
 	paymentService := service.NewPaymentService(paymentRepo) // Dependency injection (interface-based)
 	// Initialize Mercado Pago Auth Service
@@ -101,7 +101,7 @@ func main() {
 
 	checkoutService := service.NewCheckoutService(db.DB, productRepo, discountRepo, paymentRepo, userRepo, subscriptionRepo, libraryRepo, depositService)
 	depositService.SetCheckoutGateway(checkoutService) // Interface-based decoupling (no circular dependency)
-	libraryService := service.NewLibraryService(libraryRepo, productRepo, fileService)
+	libraryService := service.NewLibraryService(libraryRepo, productRepo, fileService, cfg.APIBaseURL)
 	historyService := service.NewHistoryService(paymentRepo, libraryRepo)
 	subscriptionService := service.NewSubscriptionService(subscriptionRepo)
 	discountService := service.NewDiscountService(discountRepo)
@@ -422,6 +422,9 @@ func main() {
 			admin.GET("/emails/logs", emailManagementHandler.GetEmailLogs)
 			admin.GET("/emails/logs/:id", emailManagementHandler.GetEmailLogByID)
 			admin.POST("/emails/logs/:id/resend", emailManagementHandler.ResendEmail)
+			admin.GET("/emails/config", emailManagementHandler.GetSMTPConfig)
+			admin.POST("/emails/config", emailManagementHandler.UpdateSMTPConfig)
+			admin.POST("/emails/config/test", emailManagementHandler.TestSMTPConnection)
 
 			// Permission Management - Requires ROLES permission (DIRECTION only)
 			admin.GET("/permissions/roles", permissionHandler.GetAllRolePermissions)

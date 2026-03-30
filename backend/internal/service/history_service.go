@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/pixelcraft/api/internal/models"
@@ -30,7 +31,7 @@ func (s *HistoryService) GetUserHistory(ctx context.Context, userID string) (*mo
 
 	// Use errgroup for parallel execution of independent I/O operations
 	var subs []models.SubscriptionMini
-	var items []models.UserPurchaseWithProduct
+	var products []models.ProductMini
 
 	g, ctx := errgroup.WithContext(ctx)
 
@@ -44,12 +45,12 @@ func (s *HistoryService) GetUserHistory(ctx context.Context, userID string) (*mo
 		return nil
 	})
 
-	// Goroutine 2: Get user library (purchases + product)
+	// Goroutine 2: Get user library minimal (optimized query)
 	g.Go(func() error {
 		var fetchErr error
-		items, fetchErr = s.libraryRepo.GetUserLibrary(ctx, uid)
+		products, fetchErr = s.libraryRepo.GetUserLibraryMinimal(ctx, uid)
 		if fetchErr != nil {
-			return fmt.Errorf("failed to get user library: %w", fetchErr)
+			return fmt.Errorf("failed to get user library minimal: %w", fetchErr)
 		}
 		return nil
 	})
@@ -57,17 +58,6 @@ func (s *HistoryService) GetUserHistory(ctx context.Context, userID string) (*mo
 	// Wait for both goroutines to complete
 	if err := g.Wait(); err != nil {
 		return nil, err
-	}
-
-	// Transform library items to minimal product format
-	products := make([]models.ProductMini, 0, len(items))
-	for _, it := range items {
-		products = append(products, models.ProductMini{
-			ID:    it.Product.ID,
-			Name:  it.Product.Name,
-			Price: it.Product.Price,
-			Type:  it.Product.Type,
-		})
 	}
 
 	resp := &models.HistoryResponse{
@@ -78,6 +68,7 @@ func (s *HistoryService) GetUserHistory(ctx context.Context, userID string) (*mo
 }
 
 // GetUserInvoiceHistory retrieves and categorizes user invoices.
+// Optimized: Single-pass categorization with NextInvoice priority (Overdue > Due)
 func (s *HistoryService) GetUserInvoiceHistory(ctx context.Context, userID string) (*models.InvoiceHistoryResponse, error) {
 	uid, err := uuid.Parse(userID)
 	if err != nil {
@@ -89,26 +80,36 @@ func (s *HistoryService) GetUserInvoiceHistory(ctx context.Context, userID strin
 		return nil, fmt.Errorf("failed to get user subscription invoices: %w", err)
 	}
 
-	var paidInvoices []models.SubscriptionInvoice
-	var overdueInvoices []models.SubscriptionInvoice
-	var dueInvoices []models.SubscriptionInvoice
+	capacity := len(invoices)
+	paidInvoices := make([]models.SubscriptionInvoice, 0, capacity)
+	overdueInvoices := make([]models.SubscriptionInvoice, 0, capacity)
+	dueInvoices := make([]models.SubscriptionInvoice, 0, capacity)
+	var nextInvoice *models.SubscriptionInvoice
 
-	for _, invoice := range invoices {
+	for i := range invoices {
+		invoice := &invoices[i]
 		switch invoice.Status {
 		case models.InvoiceStatusPaid:
-			paidInvoices = append(paidInvoices, invoice)
-		case models.InvoiceStatusOverdue:
-			overdueInvoices = append(overdueInvoices, invoice)
-		case models.InvoiceStatusDue:
-			dueInvoices = append(dueInvoices, invoice)
-		}
-	}
+			paidInvoices = append(paidInvoices, *invoice)
 
-	// Select the earliest due invoice as next invoice
-	var nextInvoice *models.SubscriptionInvoice
-	for i, invoice := range dueInvoices {
-		if nextInvoice == nil || invoice.DueDate.Before(nextInvoice.DueDate) {
-			nextInvoice = &dueInvoices[i]
+		case models.InvoiceStatusOverdue:
+			overdueInvoices = append(overdueInvoices, *invoice)
+			// Overdue takes priority: always update nextInvoice if this is the earliest overdue
+			if nextInvoice == nil || truncateToDay(invoice.DueDate).Before(truncateToDay(nextInvoice.DueDate)) {
+				nextInvoice = invoice
+			}
+
+		case models.InvoiceStatusDue:
+			dueInvoices = append(dueInvoices, *invoice)
+			// Only update nextInvoice if:
+			// 1. No nextInvoice exists yet, OR
+			// 2. Current nextInvoice is Overdue (keep the overdue one), OR
+			// 3. This Due invoice is earlier than the current nextInvoice (and current is also Due)
+			if nextInvoice == nil {
+				nextInvoice = invoice
+			} else if nextInvoice.Status != models.InvoiceStatusOverdue && truncateToDay(invoice.DueDate).Before(truncateToDay(nextInvoice.DueDate)) {
+				nextInvoice = invoice
+			}
 		}
 	}
 
@@ -118,4 +119,11 @@ func (s *HistoryService) GetUserInvoiceHistory(ctx context.Context, userID strin
 		OverdueInvoices: overdueInvoices,
 		DueInvoices:     dueInvoices,
 	}, nil
+}
+
+// truncateToDay normalizes a timestamp precisely to its local calendar day 
+// ignoring time components, useful for equitable invoice "due day" comparisons.
+func truncateToDay(t time.Time) time.Time {
+	y, m, d := t.Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, t.Location())
 }

@@ -12,7 +12,8 @@ import {
     FileText,
     UserCog,
     Server,
-    Ticket
+    Ticket,
+    Mail
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
@@ -35,6 +36,7 @@ const AdminLayout = () => {
         { id: 'catalog', icon: Package, label: 'Catálogo', route: '/admin/catalog' },
         { id: 'files', icon: FileText, label: 'Arquivos', route: '/admin/catalog/files' },
         { id: 'tickets', icon: MessageSquare, label: 'Tickets', route: '/admin/support' },
+        { id: 'email-settings', icon: Mail, label: 'E-mail', route: '/admin/email' },
         { id: 'system', icon: Server, label: 'Recursos do Sistema', route: '/admin/system' },
         { id: 'client-dashboard', icon: LayoutDashboard, label: 'Voltar ao Dashboard', route: '/dashboard' },
     ];
@@ -53,9 +55,9 @@ const AdminLayout = () => {
             return allMenuItems.filter(item => ['tickets', 'client-dashboard'].includes(item.id));
         }
 
-        // ADMIN role cannot see system resources (only DIRECTION, ENGINEERING, DEVELOPMENT)
+        // ADMIN role cannot see system resources or email settings
         if (role === 'ADMIN') {
-            return allMenuItems.filter(item => item.id !== 'system');
+            return allMenuItems.filter(item => !['system', 'email-settings'].includes(item.id));
         }
 
         // Other admin roles see everything

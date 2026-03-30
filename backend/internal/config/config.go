@@ -16,7 +16,9 @@ type Config struct {
 	CORS             CORSConfig
 	CPFEncryptionKey string
 	FileEncryptionKey string // For encrypting download URLs
+	EmailEncryptionKey string // For encrypting SMTP credentials
 	MercadoPago      MercadoPagoConfig
+	APIBaseURL       string // Base URL for public API endpoints
 }
 
 // MercadoPagoConfig holds Mercado Pago settings
@@ -110,8 +112,10 @@ func Load() (*Config, error) {
 		CORS: CORSConfig{
 			AllowedOrigins: corsOrigins,
 		},
-		CPFEncryptionKey:  getRequired("CPF_ENCRYPTION_KEY"),
-		FileEncryptionKey: getRequired("FILE_ENCRYPTION_KEY"),
+		CPFEncryptionKey:   getRequired("CPF_ENCRYPTION_KEY"),
+		FileEncryptionKey:  getRequired("FILE_ENCRYPTION_KEY"),
+		EmailEncryptionKey: getRequired("EMAIL_ENCRYPTION_KEY"),
+		APIBaseURL:         getOptional("API_BASE_URL", "https://api.pixelcraft-studio.store"),
 		MercadoPago: MercadoPagoConfig{
 			AccessToken:       getOptional("MP_ACCESS_TOKEN", ""),
 			WebhookURL:        getOptional("MP_WEBHOOK_URL", ""),

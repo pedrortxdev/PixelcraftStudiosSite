@@ -164,6 +164,44 @@ func (h *EmailManagementHandler) ResendEmail(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Email resent successfully"})
 }
 
+// GetSMTPConfig returns the current SMTP configuration
+func (h *EmailManagementHandler) GetSMTPConfig(c *gin.Context) {
+	config := h.emailService.GetSMTPConfig(c.Request.Context())
+	c.JSON(http.StatusOK, config)
+}
+
+// UpdateSMTPConfig updates the SMTP configuration
+func (h *EmailManagementHandler) UpdateSMTPConfig(c *gin.Context) {
+	var req service.EmailConfig
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request", "details": err.Error()})
+		return
+	}
+
+	if err := h.emailService.UpdateSMTPConfig(c.Request.Context(), req); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update SMTP configuration", "details": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "SMTP configuration updated successfully"})
+}
+
+// TestSMTPConnection tests the SMTP connection with provided credentials
+func (h *EmailManagementHandler) TestSMTPConnection(c *gin.Context) {
+	var req service.EmailConfig
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request", "details": err.Error()})
+		return
+	}
+
+	if err := h.emailService.TestSMTPConnection(c.Request.Context(), req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "SMTP connection test failed", "details": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "SMTP connection test successful"})
+}
+
 func stringPtr(s string) *string {
 	return &s
 }

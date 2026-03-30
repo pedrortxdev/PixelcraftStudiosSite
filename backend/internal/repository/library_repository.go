@@ -63,6 +63,38 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 	return items, nil
 }
 
+// GetUserLibraryMinimal returns a minimal list of purchased products for history display (optimized)
+func (r *LibraryRepository) GetUserLibraryMinimal(ctx context.Context, userID uuid.UUID) ([]models.ProductMini, error) {
+	query := `
+		SELECT p.id, p.name, p.price, p.type
+		FROM user_purchases up
+		JOIN products p ON up.product_id = p.id
+		WHERE up.user_id = $1
+		ORDER BY up.purchased_at DESC
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query minimal user library: %w", err)
+	}
+	defer rows.Close()
+
+	var products []models.ProductMini
+	for rows.Next() {
+		var p models.ProductMini
+		if err := rows.Scan(&p.ID, &p.Name, &p.Price, &p.Type); err != nil {
+			return nil, fmt.Errorf("failed to scan minimal product: %w", err)
+		}
+		products = append(products, p)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows error: %w", err)
+	}
+
+	return products, nil
+}
+
 // UserOwnsProduct checks if the user purchased a product
 func (r *LibraryRepository) UserOwnsProduct(ctx context.Context, userID uuid.UUID, productID uuid.UUID) (bool, error) {
 	query := `SELECT COUNT(1) FROM user_purchases WHERE user_id = $1 AND product_id = $2`

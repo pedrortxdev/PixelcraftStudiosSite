@@ -570,3 +570,137 @@ func (r *FileRepository) CleanupExpiredDownloadTokens(ctx context.Context) (int,
 
 	return deletedCount, nil
 }
+
+// GetRolePermissionsForFile retrieves all role permissions for a file
+func (r *FileRepository) GetRolePermissionsForFile(ctx context.Context, fileID uuid.UUID) ([]string, error) {
+	query := `
+		SELECT role_name
+		FROM file_permission_roles
+		WHERE file_id = $1
+		ORDER BY role_name
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, fileID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var roles []string
+	for rows.Next() {
+		var role string
+		if err := rows.Scan(&role); err != nil {
+			return nil, err
+		}
+		roles = append(roles, role)
+	}
+
+	return roles, nil
+}
+
+// GetProductPermissionsForFile retrieves all product permissions for a file
+func (r *FileRepository) GetProductPermissionsForFile(ctx context.Context, fileID uuid.UUID) ([]uuid.UUID, error) {
+	query := `
+		SELECT product_id
+		FROM file_permission_products
+		WHERE file_id = $1
+		ORDER BY created_at
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, fileID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var products []uuid.UUID
+	for rows.Next() {
+		var productID uuid.UUID
+		if err := rows.Scan(&productID); err != nil {
+			return nil, err
+		}
+		products = append(products, productID)
+	}
+
+	return products, nil
+}
+
+// AddRolePermissionToFile adds a role permission to a file (new relational table)
+func (r *FileRepository) AddRolePermissionToFile(ctx context.Context, fileID uuid.UUID, role string) error {
+	query := `
+		INSERT INTO file_permission_roles (file_id, role_name)
+		VALUES ($1, $2)
+		ON CONFLICT (file_id, role_name) DO NOTHING
+	`
+
+	_, err := r.db.ExecContext(ctx, query, fileID, role)
+	return err
+}
+
+// RemoveRolePermissionFromFile removes a role permission from a file (new relational table)
+func (r *FileRepository) RemoveRolePermissionFromFile(ctx context.Context, fileID uuid.UUID, role string) error {
+	query := `
+		DELETE FROM file_permission_roles
+		WHERE file_id = $1 AND role_name = $2
+	`
+
+	_, err := r.db.ExecContext(ctx, query, fileID, role)
+	return err
+}
+
+// AddProductPermissionToFile adds a product permission to a file (new relational table)
+func (r *FileRepository) AddProductPermissionToFile(ctx context.Context, fileID, productID uuid.UUID) error {
+	query := `
+		INSERT INTO file_permission_products (file_id, product_id)
+		VALUES ($1, $2)
+		ON CONFLICT (file_id, product_id) DO NOTHING
+	`
+
+	_, err := r.db.ExecContext(ctx, query, fileID, productID)
+	return err
+}
+
+// RemoveProductPermissionFromFile removes a product permission from a file (new relational table)
+func (r *FileRepository) RemoveProductPermissionFromFile(ctx context.Context, fileID, productID uuid.UUID) error {
+	query := `
+		DELETE FROM file_permission_products
+		WHERE file_id = $1 AND product_id = $2
+	`
+
+	_, err := r.db.ExecContext(ctx, query, fileID, productID)
+	return err
+}
+
+// SyncFilePermissions updates file permissions to use both JSON (legacy) and relational tables
+// This is a transitional method - in the future, only relational tables will be used
+func (r *FileRepository) SyncFilePermissions(ctx context.Context, fileID uuid.UUID, roles []string, productIDs []uuid.UUID) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Clear existing permissions in relational tables
+	if _, err := tx.ExecContext(ctx, `DELETE FROM file_permission_roles WHERE file_id = $1`, fileID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM file_permission_products WHERE file_id = $1`, fileID); err != nil {
+		return err
+	}
+
+	// Insert new role permissions
+	for _, role := range roles {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO file_permission_roles (file_id, role_name) VALUES ($1, $2)`, fileID, role); err != nil {
+			return err
+		}
+	}
+
+	// Insert new product permissions
+	for _, productID := range productIDs {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO file_permission_products (file_id, product_id) VALUES ($1, $2)`, fileID, productID); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}

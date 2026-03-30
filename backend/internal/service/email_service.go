@@ -3,13 +3,17 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
 	"crypto/tls"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io"
 	"log"
 	"net"
 	"net/smtp"
@@ -45,6 +49,7 @@ type EmailService struct {
 	configCache *ConfigCache
 	pool        *SMTPPool
 	repo        *EmailRepository
+	encryptionKey []byte // For encrypting SMTP credentials
 }
 
 // EmailRepository handles email logging operations
@@ -58,7 +63,14 @@ func NewEmailRepository(db *sql.DB) *EmailRepository {
 }
 
 // NewEmailService creates a new EmailService with connection pooling
-func NewEmailService(db *sql.DB) *EmailService {
+func NewEmailService(db *sql.DB, encryptionKey string) *EmailService {
+	// Decode hex encryption key
+	key, err := hex.DecodeString(encryptionKey)
+	if err != nil || len(key) != 32 {
+		log.Printf("⚠️  WARNING: Invalid EMAIL_ENCRYPTION_KEY. Falling back to empty key.")
+		key = make([]byte, 32)
+	}
+
 	// Default config from env - AWS SES configuration
 	config := EmailConfig{
 		Host:     getEnv("SMTP_HOST", "email-smtp.us-east-1.amazonaws.com"),
@@ -87,11 +99,12 @@ func NewEmailService(db *sql.DB) *EmailService {
 	repo := NewEmailRepository(db)
 
 	return &EmailService{
-		config:      config,
-		db:          db,
-		configCache: cache,
-		pool:        pool,
-		repo:        repo,
+		config:        config,
+		db:            db,
+		configCache:   cache,
+		pool:          pool,
+		repo:          repo,
+		encryptionKey: key,
 	}
 }
 
@@ -99,6 +112,59 @@ func NewEmailService(db *sql.DB) *EmailService {
 func (s *EmailService) GetFromEmail() string {
 	config := s.loadConfig()
 	return config.From
+}
+
+// encryptPassword uses AES-GCM for encryption
+func (s *EmailService) encryptPassword(password string) (string, error) {
+	block, err := aes.NewCipher(s.encryptionKey)
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", err
+	}
+	ciphertext := gcm.Seal(nonce, nonce, []byte(password), nil)
+	return base64.StdEncoding.EncodeToString(ciphertext), nil
+}
+
+// decryptPassword decrypts AES-GCM encrypted passwords
+func (s *EmailService) decryptPassword(cryptoText string) (string, error) {
+	if cryptoText == "" {
+		return "", nil
+	}
+	
+	data, err := base64.StdEncoding.DecodeString(cryptoText)
+	if err != nil {
+		return "", err
+	}
+	
+	block, err := aes.NewCipher(s.encryptionKey)
+	if err != nil {
+		return "", err
+	}
+	
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	
+	nonceSize := gcm.NonceSize()
+	if len(data) < nonceSize {
+		return "", fmt.Errorf("ciphertext too short")
+	}
+	
+	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return "", err
+	}
+	
+	return string(plaintext), nil
 }
 
 // loadConfig loads configuration from DB with caching
@@ -160,10 +226,28 @@ func (s *EmailService) loadConfig() EmailConfig {
 		config.Username = v
 	}
 	if v, ok := settings["smtp_password"]; ok && v != "" {
-		config.Password = v
+		decrypted, err := s.decryptPassword(v)
+		if err == nil {
+			config.Password = decrypted
+		} else {
+			log.Printf("Warning: Failed to decrypt SMTP password: %v", err)
+			config.Password = v // Fallback to plaintext if decryption fails (backwards compatibility)
+		}
 	}
 	if v, ok := settings["smtp_from"]; ok && v != "" {
 		config.From = v
+	}
+
+	// Update SMTP pool if host/user/port changed
+	if config.Host != s.configCache.config.Host || 
+	   config.Username != s.configCache.config.Username || 
+	   config.Port != s.configCache.config.Port ||
+	   config.Password != s.configCache.config.Password {
+		log.Printf("📧 SMTP Configuration changed, recreating pool...")
+		if s.pool != nil {
+			s.pool.Close()
+		}
+		s.pool = NewSMTPPool(config, 5)
 	}
 
 	// Update cache
@@ -171,6 +255,97 @@ func (s *EmailService) loadConfig() EmailConfig {
 	s.configCache.expiresAt = time.Now().Add(5 * time.Minute)
 
 	return config
+}
+
+// GetSMTPConfig returns the current SMTP configuration with masked password
+func (s *EmailService) GetSMTPConfig(ctx context.Context) EmailConfig {
+	config := s.loadConfig()
+	if config.Password != "" {
+		config.Password = "********" // Mask password for security
+	}
+	return config
+}
+
+// UpdateSMTPConfig updates SMTP settings in the database and invalidates cache
+func (s *EmailService) UpdateSMTPConfig(ctx context.Context, config EmailConfig) error {
+	// Encrypt password before saving
+	encryptedPassword, err := s.encryptPassword(config.Password)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt password: %w", err)
+	}
+
+	settings := map[string]string{
+		"smtp_host":     config.Host,
+		"smtp_port":     config.Port,
+		"smtp_email":    config.Username,
+		"smtp_password": encryptedPassword,
+		"smtp_from":     config.From,
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	for k, v := range settings {
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO system_settings (key, value) 
+			VALUES ($1, $2) 
+			ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = CURRENT_TIMESTAMP
+		`, k, v)
+		if err != nil {
+			return fmt.Errorf("failed to update setting %s: %w", k, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	// Invalidate cache immediately to force pool recreation on next use
+	s.configCache.mu.Lock()
+	s.configCache.expiresAt = time.Now().Add(-1 * time.Second)
+	s.configCache.mu.Unlock()
+
+	log.Printf("📧 SMTP Configuration updated successfully by admin")
+	return nil
+}
+
+// TestSMTPConnection tests the SMTP connection with provided credentials
+func (s *EmailService) TestSMTPConnection(ctx context.Context, config EmailConfig) error {
+	addr := fmt.Sprintf("%s:%s", config.Host, config.Port)
+	auth := smtp.PlainAuth("", config.Username, config.Password, config.Host)
+
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return fmt.Errorf("failed to connect to %s: %w", addr, err)
+	}
+	defer conn.Close()
+
+	host, _, _ := net.SplitHostPort(addr)
+	client, err := smtp.NewClient(conn, host)
+	if err != nil {
+		return fmt.Errorf("failed to create SMTP client: %w", err)
+	}
+	defer client.Quit()
+
+	if config.Port == "25" || config.Port == "587" {
+		tlsConfig := &tls.Config{
+			ServerName: config.Host,
+			MinVersion: tls.VersionTLS12,
+		}
+		if err := client.StartTLS(tlsConfig); err != nil {
+			return fmt.Errorf("STARTTLS failed: %w", err)
+		}
+	}
+
+	if err := client.Auth(auth); err != nil {
+		return fmt.Errorf("SMTP authentication failed: %w", err)
+	}
+
+	return client.Noop()
 }
 
 // SendEmail sends an email to the specified recipient
@@ -188,22 +363,54 @@ func (s *EmailService) SendEmailHTML(ctx context.Context, to, subject, htmlBody,
 	// Build message with proper headers and unique boundary
 	msg := s.buildMessage(to, subject, htmlBody, textBody, config)
 
+	// 1. Initial log (PENDING)
+	systemUser := "SYSTEM"
+	emailLog := &models.EmailLog{
+		FromEmail: config.From,
+		ToEmail:   to,
+		Subject:   subject,
+		Body:      htmlBody,
+		Status:    "PENDING",
+		SentBy:    &systemUser,
+	}
+	
+	if err := s.LogEmail(ctx, emailLog); err != nil {
+		log.Printf("⚠️  Warning: Failed to create initial email log: %v", err)
+	}
+
+	// Helper to update log status
+	updateLog := func(status, errMsg string) {
+		if emailLog.ID == "" {
+			return
+		}
+		emailLog.Status = status
+		if errMsg != "" {
+			emailLog.ErrorMessage = &errMsg
+		}
+		if err := s.UpdateEmailLog(ctx, emailLog); err != nil {
+			log.Printf("⚠️  Warning: Failed to update email log: %v", err)
+		}
+	}
+
 	// Get connection from pool
 	client, _, err := s.pool.Get(ctx)
 	if err != nil {
 		log.Printf("📧 Failed to get connection from pool: %v", err)
+		updateLog("FAILED", fmt.Sprintf("failed to get SMTP connection: %v", err))
 		return fmt.Errorf("failed to get SMTP connection: %w", err)
 	}
 	defer s.pool.Put(client) // Return to pool
 
 	// Set sender
 	if err := client.Mail(config.From); err != nil {
+		updateLog("FAILED", fmt.Sprintf("SMTP MAIL FROM failed: %v", err))
 		return fmt.Errorf("SMTP MAIL FROM failed: %w", err)
 	}
 
 	// Set recipient
 	if err := client.Rcpt(to); err != nil {
 		log.Printf("❌ Invalid recipient address: %s", to)
+		updateLog("FAILED", fmt.Sprintf("invalid recipient: %v", err))
 		return fmt.Errorf("invalid recipient email address")
 	}
 
@@ -211,26 +418,34 @@ func (s *EmailService) SendEmailHTML(ctx context.Context, to, subject, htmlBody,
 	w, err := client.Data()
 	if err != nil {
 		// Check for rate limit errors
-		if strings.Contains(err.Error(), "454") || strings.Contains(err.Error(), "throttl") {
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "454") || strings.Contains(errMsg, "throttl") {
 			log.Printf("⚠️  AWS SES rate limit exceeded")
+			updateLog("FAILED", "rate limit exceeded: "+errMsg)
 			return fmt.Errorf("email sending rate limit exceeded - please try again later")
 		}
+		updateLog("FAILED", "SMTP DATA failed: "+errMsg)
 		return fmt.Errorf("SMTP DATA failed: %w", err)
 	}
 
 	_, err = w.Write(msg)
 	if err != nil {
 		w.Close()
+		updateLog("FAILED", "failed to write body: "+err.Error())
 		return fmt.Errorf("failed to write email body: %w", err)
 	}
 
 	err = w.Close()
 	if err != nil {
+		updateLog("FAILED", "failed to close writer: "+err.Error())
 		return fmt.Errorf("failed to close email writer: %w", err)
 	}
 
+	// SUCCESS
+	updateLog("SENT", "")
 	log.Printf("✅ Email sent successfully to %s", to)
-	return client.Quit()
+	
+	return nil
 }
 
 // buildMessage builds the email message with unique boundary
@@ -510,9 +725,14 @@ func (p *SMTPPool) Close() {
 
 // Email logging methods (SRP - moved from PermissionService)
 
-// LogEmail logs an sent email
+// LogEmail logs a sent email
 func (s *EmailService) LogEmail(ctx context.Context, log *models.EmailLog) error {
 	return s.repo.LogEmail(ctx, log)
+}
+
+// UpdateEmailLog updates an existing email log
+func (s *EmailService) UpdateEmailLog(ctx context.Context, log *models.EmailLog) error {
+	return s.repo.UpdateEmailLog(ctx, log)
 }
 
 // GetEmailLogs returns email logs with pagination and proper validation
@@ -569,6 +789,18 @@ func (r *EmailRepository) LogEmail(ctx context.Context, log *models.EmailLog) er
 		metadataJSON,
 	).Scan(&log.ID, &log.SentAt)
 
+	return err
+}
+
+// UpdateEmailLog updates an existing email log (e.g., status, error)
+func (r *EmailRepository) UpdateEmailLog(ctx context.Context, log *models.EmailLog) error {
+	query := `
+		UPDATE email_logs
+		SET status = $1, error_message = $2, message_id = $3
+		WHERE id = $4
+	`
+
+	_, err := r.db.ExecContext(ctx, query, log.Status, log.ErrorMessage, log.MessageID, log.ID)
 	return err
 }
 

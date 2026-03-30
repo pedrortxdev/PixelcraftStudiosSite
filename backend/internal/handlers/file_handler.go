@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -864,31 +863,14 @@ func (h *FileHandler) DownloadFilePublic(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
-	// Get file by token from database
-	var file models.File
-	query := `
-		SELECT id, name, file_name, file_type, file_path, size,
-		       created_by, created_at, updated_at, is_deleted,
-		       access_type, required_role, allowed_roles, required_product_id, allowed_product_ids,
-		       public_link_token, public_link_expires_at, download_count, max_downloads
-		FROM files
-		WHERE public_link_token = $1 AND is_deleted = false
-	`
-
-	err = h.service.GetDB().QueryRowContext(ctx, query, token).Scan(
-		&file.ID, &file.Name, &file.FileName, &file.FileType, &file.FilePath,
-		&file.Size, &file.CreatedBy, &file.CreatedAt, &file.UpdatedAt, &file.IsDeleted,
-		&file.AccessType, &file.RequiredRole, &file.AllowedRoles, &file.RequiredProductID,
-		&file.AllowedProductIDs, &file.PublicLinkToken, &file.PublicLinkExpiresAt,
-		&file.DownloadCount, &file.MaxDownloads,
-	)
-
+	// Get file by token from database (using service method, not raw DB access)
+	file, err := h.service.GetFileByPublicToken(ctx, token)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			c.JSON(http.StatusNotFound, gin.H{"error": "File not found or invalid token"})
-			return
-		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve file"})
+		return
+	}
+	if file == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "File not found or invalid token"})
 		return
 	}
 

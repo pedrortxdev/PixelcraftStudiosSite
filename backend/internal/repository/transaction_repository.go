@@ -1,9 +1,11 @@
 package repository
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/pixelcraft/api/internal/models"
@@ -44,6 +46,38 @@ func (r *TransactionRepository) CreateTx(tx *sqlx.Tx, transaction *models.Transa
 	`
 	_, err := tx.NamedExec(query, transaction)
 	return err
+}
+
+// BatchInsertPartnerTransactions inserts multiple partner-share transaction records in a single query.
+// Accepts a standard *sql.Tx for compatibility with services that use database/sql.
+func (r *TransactionRepository) BatchInsertPartnerTransactions(ctx context.Context, tx *sql.Tx, transactions []*models.Transaction) error {
+	if len(transactions) == 0 {
+		return nil
+	}
+
+	// Build a multi-row INSERT: INSERT INTO ... VALUES ($1,$2,...), ($8,$9,...), ...
+	valuesClauses := make([]string, 0, len(transactions))
+	args := make([]interface{}, 0, len(transactions)*7)
+	for i, t := range transactions {
+		argIdx := i * 7
+		valuesClauses = append(valuesClauses, fmt.Sprintf(
+			"($%d, $%d, $%d, $%d, $%d, $%d, $%d)",
+			argIdx+1, argIdx+2, argIdx+3, argIdx+4, argIdx+5, argIdx+6, argIdx+7,
+		))
+		args = append(args, t.ID, t.UserID, t.Amount, t.Status, t.Type, t.CreatedAt, t.UpdatedAt)
+	}
+
+	query := fmt.Sprintf(`
+		INSERT INTO transactions (id, user_id, amount, status, type, created_at, updated_at)
+		VALUES %s
+	`, strings.Join(valuesClauses, ", "))
+
+	_, err := tx.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to batch insert partner transactions: %w", err)
+	}
+
+	return nil
 }
 
 // GetByProviderPaymentID retrieves a transaction by its provider payment ID

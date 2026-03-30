@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -71,6 +72,7 @@ func (h *MessageHandler) SendMessage(c *gin.Context) {
 }
 
 // GetMessages handles retrieving chat history
+// FIX 1: Supports cursor-based pagination (preferred) and offset-based (legacy)
 func (h *MessageHandler) GetMessages(c *gin.Context) {
 	subIDStr := c.Param("id")
 	userIDStr := c.GetString("user_id")
@@ -93,7 +95,9 @@ func (h *MessageHandler) GetMessages(c *gin.Context) {
 	}
 
 	// Parse pagination parameters (optional)
+	// FIX 1: Prefer cursor-based pagination for real-time chats
 	limit := service.DefaultChatHistoryLimit
+	var cursorID *string
 	offset := service.DefaultChatHistoryOffset
 
 	if l := c.Query("limit"); l != "" {
@@ -101,15 +105,25 @@ func (h *MessageHandler) GetMessages(c *gin.Context) {
 			limit = parsed
 		}
 	}
-	if o := c.Query("offset"); o != "" {
-		if parsed, err := strconv.Atoi(o); err == nil && parsed >= 0 {
-			offset = parsed
+
+	// Cursor-based pagination (preferred)
+	if cursor := c.Query("cursor"); cursor != "" {
+		cursorID = &cursor
+	}
+
+	// Offset-based pagination (legacy fallback)
+	if cursorID == nil {
+		if o := c.Query("offset"); o != "" {
+			if parsed, err := strconv.Atoi(o); err == nil && parsed >= 0 {
+				offset = parsed
+			}
 		}
 	}
 
 	params := &service.GetChatHistoryParams{
-		Limit:  limit,
-		Offset: offset,
+		Limit:    limit,
+		Offset:   offset,
+		CursorID: cursorID,
 	}
 
 	messages, err := h.messageService.GetChatHistory(c.Request.Context(), subID, userID, isAdmin, params)
@@ -120,6 +134,10 @@ func (h *MessageHandler) GetMessages(c *gin.Context) {
 		}
 		if err.Error() == "subscription not found" {
 			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+			return
+		}
+		if strings.Contains(err.Error(), "subscription chat is disabled") {
+			c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

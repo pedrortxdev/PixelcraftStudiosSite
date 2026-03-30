@@ -39,13 +39,18 @@ func (r *PaymentRepository) Create(ctx context.Context, tx *sql.Tx, payment *mod
 	}
 
 	var paymentID uuid.UUID
+	
+	amountDecimal := float64(payment.Amount) / 100
+	discountDecimal := float64(payment.DiscountApplied) / 100
+	finalAmountDecimal := float64(payment.FinalAmount) / 100
+
 	err := execTx.QueryRowContext(ctx, query,
 		payment.ID,
 		payment.UserID,
 		payment.Description,
-		payment.Amount,
-		payment.DiscountApplied,
-		payment.FinalAmount,
+		amountDecimal,
+		discountDecimal,
+		finalAmountDecimal,
 		payment.Status,
 		payment.IsTest,
 		payment.PaymentMethod,
@@ -86,6 +91,7 @@ func (r *PaymentRepository) GetByIDTx(ctx context.Context, tx *sql.Tx, id string
 
 	var p models.Payment
 	var metadata sql.NullString
+	var amountFloat, discountFloat, finalAmountFloat float64
 	
 	var execTx interface {
 		QueryRowContext(context.Context, string, ...interface{}) *sql.Row
@@ -97,8 +103,8 @@ func (r *PaymentRepository) GetByIDTx(ctx context.Context, tx *sql.Tx, id string
 	}
 
 	err = execTx.QueryRowContext(ctx, query, paymentID).Scan(
-		&p.ID, &p.UserID, &p.SubscriptionID, &p.Description, &p.Amount, &p.DiscountApplied,
-		&p.FinalAmount, &p.Status, &p.IsTest, &p.PaymentGatewayID, &p.PaymentMethod,
+		&p.ID, &p.UserID, &p.SubscriptionID, &p.Description, &amountFloat, &discountFloat,
+		&finalAmountFloat, &p.Status, &p.IsTest, &p.PaymentGatewayID, &p.PaymentMethod,
 		&metadata, &p.CreatedAt, &p.CompletedAt, &p.FailedAt,
 	)
 
@@ -108,6 +114,10 @@ func (r *PaymentRepository) GetByIDTx(ctx context.Context, tx *sql.Tx, id string
 	if err != nil {
 		return nil, fmt.Errorf("failed to get payment: %w", err)
 	}
+
+	p.Amount = int64(amountFloat * 100)
+	p.DiscountApplied = int64(discountFloat * 100)
+	p.FinalAmount = int64(finalAmountFloat * 100)
 
 	if metadata.Valid {
 		p.PaymentMetadata = &metadata.String
@@ -155,9 +165,12 @@ func (r *PaymentRepository) GetUserPaymentStats(ctx context.Context, userID uuid
 	`
 
 	var stats models.PaymentStats
-	if err := r.db.QueryRowContext(ctx, querySpent, userID).Scan(&stats.TotalSpent); err != nil {
+	var totalSpentFloat float64
+	if err := r.db.QueryRowContext(ctx, querySpent, userID).Scan(&totalSpentFloat); err != nil {
 		// If there's an error getting total spent, still try to get the other stats
 		stats.TotalSpent = 0
+	} else {
+		stats.TotalSpent = int64(totalSpentFloat * 100)
 	}
 
 	// Products purchased from user_purchases table
@@ -206,11 +219,13 @@ func (r *PaymentRepository) GetRecentPayments(ctx context.Context, userID uuid.U
 	for rows.Next() {
 		var p models.PaymentInfo
 		var createdAt time.Time
+		var amountFloat float64
 
-		if err := rows.Scan(&p.ID, &p.Description, &p.Amount, &p.Status, &createdAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.Description, &amountFloat, &p.Status, &createdAt); err != nil {
 			return []models.PaymentInfo{}, fmt.Errorf("failed to scan payment: %w", err)
 		}
 
+		p.Amount = int64(amountFloat * 100)
 		p.CreatedAt = createdAt.Format("2006-01-02T15:04:05Z07:00")
 		payments = append(payments, p)
 	}
@@ -245,9 +260,11 @@ func (r *PaymentRepository) GetMonthlySpending(ctx context.Context, userID uuid.
 	var spending []models.MonthlySpend
 	for rows.Next() {
 		var s models.MonthlySpend
-		if err := rows.Scan(&s.Month, &s.Amount); err != nil {
+		var amountFloat float64
+		if err := rows.Scan(&s.Month, &amountFloat); err != nil {
 			return []models.MonthlySpend{}, fmt.Errorf("failed to scan monthly spending: %w", err)
 		}
+		s.Amount = int64(amountFloat * 100)
 		spending = append(spending, s)
 	}
 
@@ -261,14 +278,16 @@ func (r *PaymentRepository) GetMonthlySpending(ctx context.Context, userID uuid.
 // GetNextBillingSummary returns total next billing amount and list of dates for active subscriptions
 func (r *PaymentRepository) GetNextBillingSummary(ctx context.Context, userID uuid.UUID) (int64, []string, error) {
 	// Sum of price_per_month for active subscriptions
-	var total int64
+	var totalFloat float64
 	if err := r.db.QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(price_per_month), 0)
 		FROM subscriptions
 		WHERE user_id = $1 AND status = 'ACTIVE'
-	`, userID).Scan(&total); err != nil {
+	`, userID).Scan(&totalFloat); err != nil {
 		return 0, nil, fmt.Errorf("failed to sum next billing: %w", err)
 	}
+
+	total := int64(totalFloat * 100)
 
 	// Collect next billing dates for active subscriptions
 	rows, err := r.db.QueryContext(ctx, `
@@ -315,9 +334,11 @@ func (r *PaymentRepository) GetUserSubscriptionsMinimal(ctx context.Context, use
 	var subs []models.SubscriptionMini
 	for rows.Next() {
 		var s models.SubscriptionMini
-		if err := rows.Scan(&s.ID, &s.PlanName, &s.PricePerMonth, &s.CreatedAt); err != nil {
+		var priceFloat float64
+		if err := rows.Scan(&s.ID, &s.PlanName, &priceFloat, &s.CreatedAt); err != nil {
 			return nil, fmt.Errorf("failed to scan subscription: %w", err)
 		}
+		s.PricePerMonth = int64(priceFloat * 100)
 		subs = append(subs, s)
 	}
 	if err = rows.Err(); err != nil {
@@ -347,11 +368,13 @@ func (r *PaymentRepository) GetUserSubscriptionInvoices(ctx context.Context, use
 		var subID uuid.UUID
 		var nextBillingDate time.Time
 		var status string
+		var amountFloat float64
 
-		if err := rows.Scan(&subID, &s.PlanName, &s.Amount, &nextBillingDate, &status); err != nil {
+		if err := rows.Scan(&subID, &s.PlanName, &amountFloat, &nextBillingDate, &status); err != nil {
 			return nil, fmt.Errorf("failed to scan subscription invoice: %w", err)
 		}
 
+		s.Amount = int64(amountFloat * 100)
 		s.SubscriptionID = subID
 		s.DueDate = nextBillingDate
 

@@ -37,6 +37,7 @@ import UserDetailPage from './pages/admin/UserDetail.jsx'
 import AdminSupport from './pages/admin/AdminSupport.jsx'
 import AdminRoles from './pages/admin/AdminRoles.jsx'
 import AdminSystemResources from './pages/admin/AdminSystemResources.jsx'
+import AdminEmailSettings from './pages/admin/AdminEmailSettings.jsx'
 import Support from './pages/Support.jsx'
 import ResetPassword from './pages/ResetPassword.jsx'
 import ErrorBoundary from './components/ErrorBoundary.jsx'
@@ -106,6 +107,7 @@ createRoot(document.getElementById('root')).render(
                   <Route path="support" element={<AdminSupport />} />
                   <Route path="roles" element={<AdminRoles />} />
                   <Route path="system" element={<AdminSystemResources />} />
+                  <Route path="email" element={<AdminEmailSettings />} />
                 </Route>
                 <Route
                   path="/suporte"

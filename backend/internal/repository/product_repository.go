@@ -95,8 +95,9 @@ func (r *ProductRepository) GetAll(ctx context.Context, page, pageSize int, prod
 	var products []models.Product
 	for rows.Next() {
 		var p models.Product
+		var priceFloat float64
 		err := rows.Scan(
-			&p.ID, &p.Name, &p.Description, &p.Price, &p.Type,
+			&p.ID, &p.Name, &p.Description, &priceFloat, &p.Type,
 			&p.GameID, &p.CategoryID, &p.DownloadURLEncrypted, &p.FileID,
 			&p.IsExclusive, &p.StockQuantity,
 			&p.ImageURL, &p.IsActive, &p.CreatedAt, &p.UpdatedAt,
@@ -104,6 +105,7 @@ func (r *ProductRepository) GetAll(ctx context.Context, page, pageSize int, prod
 		if err != nil {
 			return nil, 0, fmt.Errorf("failed to scan product: %w", err)
 		}
+		p.Price = int64(priceFloat * 100)
 		products = append(products, p)
 	}
 	
@@ -132,6 +134,7 @@ func (r *ProductRepository) GetByIDTx(ctx context.Context, tx *sql.Tx, id uuid.U
 	}
 
 	var p models.Product
+	var priceFloat float64
 	var execTx interface {
 		QueryRowContext(context.Context, string, ...interface{}) *sql.Row
 	}
@@ -142,7 +145,7 @@ func (r *ProductRepository) GetByIDTx(ctx context.Context, tx *sql.Tx, id uuid.U
 	}
 
 	err := execTx.QueryRowContext(ctx, query, id).Scan(
-		&p.ID, &p.Name, &p.Description, &p.Price, &p.Type,
+		&p.ID, &p.Name, &p.Description, &priceFloat, &p.Type,
 		&p.GameID, &p.CategoryID, &p.DownloadURLEncrypted, &p.FileID,
 		&p.IsExclusive, &p.StockQuantity,
 		&p.ImageURL, &p.IsActive, &p.CreatedAt, &p.UpdatedAt,
@@ -155,6 +158,7 @@ func (r *ProductRepository) GetByIDTx(ctx context.Context, tx *sql.Tx, id uuid.U
 		return nil, fmt.Errorf("failed to get product: %w", err)
 	}
 
+	p.Price = int64(priceFloat * 100)
 	return &p, nil
 }
 
@@ -180,8 +184,9 @@ func (r *ProductRepository) GetByIDs(ctx context.Context, ids []uuid.UUID) ([]mo
 	var products []models.Product
 	for rows.Next() {
 		var p models.Product
+		var priceFloat float64
 		err := rows.Scan(
-			&p.ID, &p.Name, &p.Description, &p.Price, &p.Type,
+			&p.ID, &p.Name, &p.Description, &priceFloat, &p.Type,
 			&p.GameID, &p.CategoryID, &p.DownloadURLEncrypted, &p.FileID,
 			&p.IsExclusive, &p.StockQuantity,
 			&p.ImageURL, &p.IsActive, &p.CreatedAt, &p.UpdatedAt,
@@ -189,6 +194,7 @@ func (r *ProductRepository) GetByIDs(ctx context.Context, ids []uuid.UUID) ([]mo
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan product: %w", err)
 		}
+		p.Price = int64(priceFloat * 100)
 		products = append(products, p)
 	}
 
@@ -204,9 +210,11 @@ func (r *ProductRepository) Create(ctx context.Context, product *models.Product)
 		RETURNING id, created_at, updated_at
 	`
 	
+	priceDecimal := float64(product.Price) / 100
+
 	err := r.db.QueryRowContext(
 		ctx, query,
-		product.Name, product.Description, product.Price, product.Type,
+		product.Name, product.Description, priceDecimal, product.Type,
 		product.GameID, product.CategoryID, product.DownloadURLEncrypted, product.FileID,
 		product.IsExclusive, product.StockQuantity,
 		product.ImageURL, product.IsActive,
@@ -231,9 +239,11 @@ func (r *ProductRepository) Update(ctx context.Context, id uuid.UUID, product *m
 		RETURNING updated_at
 	`
 	
+	priceDecimal := float64(product.Price) / 100
+
 	err := r.db.QueryRowContext(
 		ctx, query,
-		product.Name, product.Description, product.Price, product.Type,
+		product.Name, product.Description, priceDecimal, product.Type,
 		product.GameID, product.CategoryID,
 		product.IsExclusive, product.StockQuantity, product.ImageURL,
 		product.IsActive, product.DownloadURLEncrypted, product.FileID, id,
@@ -269,7 +279,8 @@ func (r *ProductRepository) UpdatePartial(ctx context.Context, id uuid.UUID, req
 	}
 	if req.Price != nil {
 		setClauses = append(setClauses, fmt.Sprintf("price = $%d", argIndex))
-		args = append(args, *req.Price)
+		priceDecimal := float64(*req.Price) / 100
+		args = append(args, priceDecimal)
 		argIndex++
 	}
 	if req.Type != nil {
