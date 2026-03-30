@@ -104,8 +104,12 @@ func main() {
 	subscriptionService := service.NewSubscriptionService(subscriptionRepo)
 	discountService := service.NewDiscountService(discountRepo)
 
-	// Admin Service (Updated with dependencies for finance and users)
-	adminService := service.NewAdminService(adminRepo, transactionRepo, userRepo, depositService, subscriptionRepo, libraryRepo, roleRepo)
+	// New domain-specific services (SRP compliance)
+	balanceService := service.NewBalanceService(transactionRepo, userRepo, db.DB)
+	userQueryService := service.NewUserQueryService(userRepo, transactionRepo, subscriptionRepo, libraryRepo, roleRepo)
+
+	// Admin Service (orchestrator only - delegates to domain services)
+	adminService := service.NewAdminService(adminRepo, balanceService, userQueryService, depositService)
 
 	// AI Service
 	aiService := service.NewAIService()

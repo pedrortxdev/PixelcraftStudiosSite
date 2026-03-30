@@ -91,13 +91,13 @@ type MPBalanceResponse struct {
 
 // CreateDeposit initiates a deposit
 func (s *DepositService) CreateDeposit(ctx context.Context, userID uuid.UUID, req models.DepositRequest) (*models.DepositResponse, error) {
-	log.Printf("Deposit Service: Iniciando criação de depósito para user ID: %s, Amount: %.2f, Method: %s", userID, req.Amount, req.Method)
+	log.Printf("Deposit Service: Iniciando criação de depósito para user ID: %s, Amount: %d cents, Method: %s", userID, req.Amount, req.Method)
 
 	var providerID string
 	var resp models.DepositResponse
 
 	if req.Method == "pix" {
-		log.Printf("Deposit Service: Criando pagamento PIX para user ID: %s, Amount: %.2f", userID, req.Amount)
+		log.Printf("Deposit Service: Criando pagamento PIX para user ID: %s, Amount: %d cents", userID, req.Amount)
 		mpResp, err := s.createPixPayment(ctx, userID, req.Amount)
 		if err != nil {
 			log.Printf("Deposit Service Error: Falha ao criar pagamento PIX - %v", err)
@@ -108,7 +108,7 @@ func (s *DepositService) CreateDeposit(ctx context.Context, userID uuid.UUID, re
 		resp.QRCodeBase64 = mpResp.PointOfInteraction.TransactionData.QRCodeBase64
 		log.Printf("Deposit Service: Pagamento PIX criado com sucesso - Payment ID: %d", mpResp.ID)
 	} else if req.Method == "link" {
-		log.Printf("Deposit Service: Criando preferência de pagamento para user ID: %s, Amount: %.2f", userID, req.Amount)
+		log.Printf("Deposit Service: Criando preferência de pagamento para user ID: %s, Amount: %d cents", userID, req.Amount)
 		// Use prefix "DEPOSIT_" to distinguish from direct purchases
 		externalRef := fmt.Sprintf("DEPOSIT_%s", userID.String())
 		mpResp, err := s.CreatePreference(ctx, userID, req.Amount, externalRef)
@@ -303,7 +303,7 @@ func (s *DepositService) ProcessWebhook(ctx context.Context, paymentID string) e
 		return fmt.Errorf("failed to verify payment with MP: %w", err)
 	}
 
-	log.Printf("Deposit Service: Webhook - Status: %s, Amount: %.2f, Ref: %s", status, amount, externalRef)
+	log.Printf("Deposit Service: Webhook - Status: %s, Amount: %d cents, Ref: %s", status, amount, externalRef)
 
 	// ROUTING: Check DEPOSIT_ prefix FIRST (before UUID parse)
 	// This prevents UUID collision since DEPOSIT_<uuid> is not a valid UUID format
@@ -351,7 +351,7 @@ func (s *DepositService) ProcessWebhook(ctx context.Context, paymentID string) e
 			if err := s.repo.CompleteDeposit(tx.ID.String(), amount); err != nil {
 				return fmt.Errorf("failed to complete deposit: %w", err)
 			}
-			log.Printf("Webhook: Depósito completado - Transaction ID: %s, Amount: %.2f", tx.ID, amount)
+			log.Printf("Webhook: Depósito completado - Transaction ID: %s, Amount: %d cents", tx.ID, amount)
 		} else if status == "rejected" || status == "cancelled" {
 			if err := s.repo.UpdateStatus(tx.ID.String(), models.TransactionStatusRejected); err != nil {
 				return fmt.Errorf("failed to update transaction status: %w", err)

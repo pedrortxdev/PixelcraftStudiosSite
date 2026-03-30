@@ -52,10 +52,10 @@ func (h *DepositHandler) Deposit(c *gin.Context) {
 		return
 	}
 
-	log.Printf("Deposit Handler: Payload recebido - Amount: %.2f, Method: %s", req.Amount, req.Method)
+	log.Printf("Deposit Handler: Payload recebido - Amount: %d cents, Method: %s", req.Amount, req.Method)
 
-	// BT-045: Validate minimum deposit amount
-	if req.Amount < 5.00 {
+	// BT-045: Validate minimum deposit amount (500 cents = R$ 5.00)
+	if req.Amount < 500 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Valor mínimo de depósito é R$ 5,00"})
 		return
 	}

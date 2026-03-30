@@ -171,7 +171,14 @@ func (h *AdminHandler) RefundTransaction(c *gin.Context) {
 		return
 	}
 
-	if err := h.service.RefundTransaction(c.Request.Context(), id); err != nil {
+	// Get admin ID from JWT context
+	adminID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	if err := h.service.RefundTransaction(c.Request.Context(), id, adminID.(string)); err != nil {
 		log.Printf("Erro Admin Refund: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to refund transaction", "details": err.Error()})
 		return
