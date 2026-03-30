@@ -1,13 +1,11 @@
 package handlers
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
+	"bytes"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -29,7 +27,7 @@ func (h *DepositHandler) Deposit(c *gin.Context) {
 	log.Printf("Deposit Handler: Iniciando transação para User ID: [buscando do contexto gin]")
 
 	// Get user ID from context (set by middleware)
-	userIDStr, exists := c.Get("user_id")  // Changed from "userID" to match middleware
+	userIDStr, exists := c.Get("user_id")
 	if !exists {
 		log.Printf("Critical: User ID missing from context")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
@@ -75,26 +73,29 @@ func (h *DepositHandler) Deposit(c *gin.Context) {
 func (h *DepositHandler) Webhook(c *gin.Context) {
 	log.Printf("Webhook: Recebido payload [iniciando processamento]")
 
+	// Read raw body for signature verification (must be done before ShouldBindJSON)
+	rawBody, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		log.Printf("Webhook Error: Failed to read body - %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read request body"})
+		return
+	}
+	// Restore body for later JSON binding
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(rawBody))
+
 	// Parse MP webhook payload
-	// MP can send data in query params or body depending on configuration.
-	// We primarily look for data.id in body for "payment" type.
-
-	// Note: Raw body logging removed for security - may contain sensitive payment data
-
 	var payload struct {
-		Type string `json:"type"`
-		Data struct {
+		Type   string `json:"type"`
+		Data   struct {
 			ID string `json:"id"`
 		} `json:"data"`
-		// Sometimes ID is at root or "id" field in query
-		ID     interface{} `json:"id"`     // Can be string or int
-		Action string      `json:"action"` // e.g. payment.created
+		ID     interface{} `json:"id"`
+		Action string      `json:"action"`
 	}
 
-	// Try binding JSON first
+	// Try binding JSON
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		log.Printf("Webhook: Erro ao fazer bind do JSON payload - %v", err)
-		// If binding fails, it might be query params or just empty body (check query)
 	}
 
 	var paymentID string
@@ -104,7 +105,6 @@ func (h *DepositHandler) Webhook(c *gin.Context) {
 		paymentID = payload.Data.ID
 		log.Printf("Webhook: Payment ID extraído do payload.data.id: %s", paymentID)
 	} else if payload.Type == "payment" || payload.Action == "payment.updated" || payload.Action == "payment.created" {
-		// Sometimes ID is int, convert to string
 		if payload.Data.ID != "" {
 			paymentID = payload.Data.ID
 		} else if idStr, ok := payload.ID.(string); ok {
@@ -122,76 +122,24 @@ func (h *DepositHandler) Webhook(c *gin.Context) {
 		topic := c.Query("topic")
 		log.Printf("Webhook: Fallback para query param - ID: %s, Topic: %s", paymentID, topic)
 
-		if topic != "payment" && topic != "merchant_order" { // We focus on payment
+		if topic != "payment" && topic != "merchant_order" {
 			log.Printf("Webhook: Topic '%s' não é 'payment' ou 'merchant_order', ignorando", topic)
-			// If not payment, just ignore but return 200
 		}
 	}
 
 	if paymentID == "" {
 		log.Printf("Webhook: Nenhum Payment ID encontrado no payload ou query params")
-		// No ID found, ignore
 		c.JSON(http.StatusOK, gin.H{"status": "ignored", "reason": "no id found"})
 		return
 	}
 
-	// Validate HMAC Signature (BT-003)
-	xSignature := c.GetHeader("x-signature")
-	xRequestId := c.GetHeader("x-request-id")
-	dataID := c.Query("data.id")
-	if dataID == "" {
-		dataID = paymentID // fallback to extracted paymentID if not in query
-	}
-
-	if h.webhookSecret != "" && xSignature != "" && xRequestId != "" {
-		var ts, v1 string
-		parts := strings.Split(xSignature, ",")
-		for _, part := range parts {
-			if strings.HasPrefix(part, "ts=") {
-				ts = strings.TrimPrefix(part, "ts=")
-			} else if strings.HasPrefix(part, "v1=") {
-				v1 = strings.TrimPrefix(part, "v1=")
-			}
-		}
-
-		if ts != "" && v1 != "" {
-			manifest := "id:" + dataID + ";request-id:" + xRequestId + ";ts:" + ts + ";"
-			
-			mac := hmac.New(sha256.New, []byte(h.webhookSecret))
-			mac.Write([]byte(manifest))
-			expectedMAC := hex.EncodeToString(mac.Sum(nil))
-
-			if expectedMAC != v1 {
-				log.Printf("Webhook Security Error: HMAC signature inválida. Expected: %s, Got: %s", expectedMAC, v1)
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid signature"})
-				return
-			}
-			log.Printf("Webhook Security: HMAC signature validado com sucesso!")
-		}
-	} else if h.webhookSecret != "" {
-		// Se o secret está configurado mas a request não tem headers de assinatura (provável fake)
-		log.Println("Webhook Security Error: Headers de assinatura ausentes na request.")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Missing signature headers"})
+	// Process webhook via service (pass headers and raw body for signature verification)
+	if err := h.service.ProcessWebhook(c.Request.Context(), paymentID, c.Request.Header, rawBody); err != nil {
+		log.Printf("Webhook Error: Falha ao processar webhook - %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to process webhook"})
 		return
 	}
 
-	log.Printf("Webhook: Verificando transação ID %s no banco...", paymentID)
-
-	// Process in background or foreground? Foreground is fine for now, MP retries if timeout.
-	if err := h.service.ProcessWebhook(c.Request.Context(), paymentID); err != nil {
-		log.Printf("Webhook Error: Falha ao processar webhook para Payment ID %s - %v", paymentID, err)
-		// Log error but probably still return 200 to MP to stop retries if it's a non-recoverable logic error?
-		// Or return 500 to force retry?
-		// Prompt says "return 200 OK immediately and exit" if status already completed.
-		// Standard practice: if we processed it (even if failed logic), return 200.
-		// If internal server error (DB down), return 500.
-		// For now, let's return 500 on error to allow retry, 200 on success.
-		// But prompt said "Do NOT trust payload... Update DB... On error: ROLLBACK".
-		// I'll return 500 if DB update failed so MP retries.
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Webhook processing failed"})
-		return
-	}
-
-	log.Printf("Webhook Success: Payment ID %s processado com sucesso", paymentID)
+	log.Printf("Webhook: Processado com sucesso para Payment ID: %s", paymentID)
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pixelcraft/api/internal/apierrors"
 	"github.com/pixelcraft/api/internal/models"
 
 	"github.com/google/uuid"
@@ -125,15 +126,18 @@ func (r *DiscountRepository) GetByID(ctx context.Context, id uuid.UUID) (*models
 	return &d, nil
 }
 
-// List retrieves all discounts
-func (r *DiscountRepository) List(ctx context.Context) ([]models.Discount, error) {
+// List retrieves discounts optionally filtering inactive ones
+func (r *DiscountRepository) List(ctx context.Context, includeDeleted bool) ([]models.Discount, error) {
 	query := `
 		SELECT id, code, type, value, is_referral, created_by_user_id, 
 		       expires_at, max_uses, current_uses, is_active, created_at,
 		       restriction_type, target_ids
 		FROM discounts
-		ORDER BY created_at DESC
 	`
+	if !includeDeleted {
+		query += ` WHERE is_active = true `
+	}
+	query += ` ORDER BY created_at DESC `
 
 	rows, err := r.db.QueryContext(ctx, query)
 	if err != nil {
@@ -183,6 +187,9 @@ func (r *DiscountRepository) Create(ctx context.Context, d *models.Discount) err
 	)
 	
 	if err != nil {
+		if strings.Contains(err.Error(), "23505") || strings.Contains(err.Error(), "unique") {
+			return apierrors.ErrDiscountCodeAlreadyExists
+		}
 		return fmt.Errorf("failed to create discount: %w", err)
 	}
 	
@@ -250,6 +257,9 @@ func (r *DiscountRepository) Update(ctx context.Context, id uuid.UUID, updates *
 
 	_, err := r.db.ExecContext(ctx, query, args...)
 	if err != nil {
+		if strings.Contains(err.Error(), "23505") || strings.Contains(err.Error(), "unique") {
+			return apierrors.ErrDiscountCodeAlreadyExists
+		}
 		return fmt.Errorf("failed to update discount: %w", err)
 	}
 

@@ -62,6 +62,11 @@ func (r *PaymentRepository) Create(ctx context.Context, tx *sql.Tx, payment *mod
 
 // GetByID retrieves a payment by its ID
 func (r *PaymentRepository) GetByID(ctx context.Context, id string) (*models.Payment, error) {
+	return r.GetByIDTx(ctx, nil, id)
+}
+
+// GetByIDTx retrieves a payment by its ID within a transaction with row-level lock
+func (r *PaymentRepository) GetByIDTx(ctx context.Context, tx *sql.Tx, id string) (*models.Payment, error) {
 	paymentID, err := uuid.Parse(id)
 	if err != nil {
 		return nil, fmt.Errorf("invalid payment ID: %w", err)
@@ -75,10 +80,23 @@ func (r *PaymentRepository) GetByID(ctx context.Context, id string) (*models.Pay
 		FROM payments
 		WHERE id = $1
 	`
+	if tx != nil {
+		query += " FOR UPDATE"
+	}
 
 	var p models.Payment
 	var metadata sql.NullString
-	err = r.db.QueryRowContext(ctx, query, paymentID).Scan(
+	
+	var execTx interface {
+		QueryRowContext(context.Context, string, ...interface{}) *sql.Row
+	}
+	if tx != nil {
+		execTx = tx
+	} else {
+		execTx = r.db
+	}
+
+	err = execTx.QueryRowContext(ctx, query, paymentID).Scan(
 		&p.ID, &p.UserID, &p.SubscriptionID, &p.Description, &p.Amount, &p.DiscountApplied,
 		&p.FinalAmount, &p.Status, &p.IsTest, &p.PaymentGatewayID, &p.PaymentMethod,
 		&metadata, &p.CreatedAt, &p.CompletedAt, &p.FailedAt,

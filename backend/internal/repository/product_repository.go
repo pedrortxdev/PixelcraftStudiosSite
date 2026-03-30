@@ -116,29 +116,83 @@ func (r *ProductRepository) GetAll(ctx context.Context, page, pageSize int, prod
 
 // GetByID retrieves a single product by ID
 func (r *ProductRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Product, error) {
+	return r.GetByIDTx(ctx, nil, id)
+}
+
+// GetByIDTx retrieves a single product by ID within a transaction with optional lock
+func (r *ProductRepository) GetByIDTx(ctx context.Context, tx *sql.Tx, id uuid.UUID) (*models.Product, error) {
 	query := `
 		SELECT id, name, description, price, type, game_id, category_id, download_url_encrypted, file_id,
 		       is_exclusive, stock_quantity, image_url, is_active, created_at, updated_at
 		FROM products
 		WHERE id = $1
 	`
-	
+	if tx != nil {
+		query += " FOR UPDATE"
+	}
+
 	var p models.Product
-	err := r.db.QueryRowContext(ctx, query, id).Scan(
+	var execTx interface {
+		QueryRowContext(context.Context, string, ...interface{}) *sql.Row
+	}
+	if tx != nil {
+		execTx = tx
+	} else {
+		execTx = r.db
+	}
+
+	err := execTx.QueryRowContext(ctx, query, id).Scan(
 		&p.ID, &p.Name, &p.Description, &p.Price, &p.Type,
 		&p.GameID, &p.CategoryID, &p.DownloadURLEncrypted, &p.FileID,
 		&p.IsExclusive, &p.StockQuantity,
 		&p.ImageURL, &p.IsActive, &p.CreatedAt, &p.UpdatedAt,
 	)
-	
+
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get product: %w", err)
 	}
-	
+
 	return &p, nil
+}
+
+// GetByIDs retrieves multiple products by their IDs using a single query
+func (r *ProductRepository) GetByIDs(ctx context.Context, ids []uuid.UUID) ([]models.Product, error) {
+	if len(ids) == 0 {
+		return []models.Product{}, nil
+	}
+
+	query := `
+		SELECT id, name, description, price, type, game_id, category_id, download_url_encrypted, file_id,
+		       is_exclusive, stock_quantity, image_url, is_active, created_at, updated_at
+		FROM products
+		WHERE id = ANY($1)
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, ids)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query products by IDs: %w", err)
+	}
+	defer rows.Close()
+
+	var products []models.Product
+	for rows.Next() {
+		var p models.Product
+		err := rows.Scan(
+			&p.ID, &p.Name, &p.Description, &p.Price, &p.Type,
+			&p.GameID, &p.CategoryID, &p.DownloadURLEncrypted, &p.FileID,
+			&p.IsExclusive, &p.StockQuantity,
+			&p.ImageURL, &p.IsActive, &p.CreatedAt, &p.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan product: %w", err)
+		}
+		products = append(products, p)
+	}
+
+	return products, nil
 }
 
 // Create creates a new product (requires encrypted download URL)

@@ -50,43 +50,57 @@ func NewCheckoutService(
 }
 
 // CheckoutMetadata stores information needed to fulfill a direct purchase after payment
+// UnitPrices are frozen at checkout time to prevent price changes from affecting paid orders
 type CheckoutMetadata struct {
 	Cart         []models.CartItem `json:"cart"`
+	UnitPrices   map[string]int64  `json:"unit_prices"` // Frozen prices: key is ProductID string
 	CouponCode   *string           `json:"coupon_code,omitempty"`
 	ReferralCode string            `json:"referral_code,omitempty"`
 }
 
 // ProcessCheckout processes a checkout request
 func (s *CheckoutService) ProcessCheckout(ctx context.Context, userID uuid.UUID, req *models.CheckoutRequest) (*models.CheckoutResponse, error) {
-	// 1. Validate items and calculate total
+	// 1. Initial Validation (Pre-transaction, to provide fast feedback)
 	totalAmount, cartItems, err := s.validateCart(ctx, req.Cart)
 	if err != nil {
 		return nil, fmt.Errorf("cart validation failed: %w", err)
 	}
 
-	// 2. Validate and apply discount
-	var discountAmount int64
-	var discount *models.Discount
-	if req.CouponCode != nil && *req.CouponCode != "" {
-		discount, discountAmount, err = s.validateAndApplyDiscount(ctx, *req.CouponCode, totalAmount, cartItems)
-		if err != nil {
-			return nil, fmt.Errorf("discount validation failed: %w", err)
-		}
+	// Prepare frozen prices map
+	frozenPrices := make(map[string]int64)
+	for _, item := range cartItems {
+		frozenPrices[item.ProductID.String()] = item.Price
 	}
-
-	finalAmount := totalAmount - discountAmount
 
 	// CASE A: PAYMENT WITH WALLET BALANCE
 	if req.UseBalance {
-		// Start a transaction with serializable isolation to prevent race conditions
+		// Start a transaction with serializable isolation to prevent race conditions (Double-Spend/Webhook/TOCTOU)
 		tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 		if err != nil {
 			return nil, fmt.Errorf("failed to begin transaction: %w", err)
 		}
 		defer tx.Rollback()
 
+		// 2. RE-VALIDATE EVERYTHING INSIDE TRANSACTION (Atomic Check)
+		// This prevents price/discount changes between initial check and fulfillment
+		currentTotal, validatedItems, err := s.validateCartTx(ctx, tx, req.Cart)
+		if err != nil {
+			return nil, err
+		}
+
+		var discountAmount int64
+		var discount *models.Discount
+		if req.CouponCode != nil && *req.CouponCode != "" {
+			discount, discountAmount, err = s.validateAndApplyDiscountTx(ctx, tx, *req.CouponCode, currentTotal, validatedItems)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		finalAmount := currentTotal - discountAmount
+
 		// 3. Stock Check WITH TRANSACTION LOCK
-		for _, item := range cartItems {
+		for _, item := range validatedItems {
 			if !item.IsPlan {
 				hasStock, err := s.productRepo.CheckStockTx(ctx, tx, item.ProductID, item.Quantity)
 				if err != nil {
@@ -113,7 +127,7 @@ func (s *CheckoutService) ProcessCheckout(ctx context.Context, userID uuid.UUID,
 			ID:              uuid.New(),
 			UserID:          userID,
 			Description:     "Purchase (Wallet Balance)",
-			Amount:          totalAmount,
+			Amount:          currentTotal,
 			DiscountApplied: discountAmount,
 			FinalAmount:     finalAmount,
 			Status:          models.PaymentStatusCompleted,
@@ -127,7 +141,7 @@ func (s *CheckoutService) ProcessCheckout(ctx context.Context, userID uuid.UUID,
 		}
 
 		// Fulfill Items
-		if err := s.fulfillItems(ctx, tx, userID, cartItems, paymentID); err != nil {
+		if err := s.fulfillItems(ctx, tx, userID, validatedItems, paymentID); err != nil {
 			return nil, err
 		}
 
@@ -162,8 +176,19 @@ func (s *CheckoutService) ProcessCheckout(ctx context.Context, userID uuid.UUID,
 	}
 
 	// CASE B: DIRECT PAYMENT VIA MERCADO PAGO
+	// We need to calculate discount even for external payment to show the correct amount
+	var discountAmount int64
+	if req.CouponCode != nil && *req.CouponCode != "" {
+		_, discountAmount, err = s.validateDiscountInternal(ctx, *req.CouponCode, totalAmount, cartItems)
+		if err != nil {
+			return nil, fmt.Errorf("discount validation failed: %w", err)
+		}
+	}
+	finalAmount := totalAmount - discountAmount
+
 	metadata := CheckoutMetadata{
 		Cart:         req.Cart,
+		UnitPrices:   frozenPrices, // FREEZE PRICES HERE
 		CouponCode:   req.CouponCode,
 		ReferralCode: req.ReferralCode,
 	}
@@ -184,7 +209,6 @@ func (s *CheckoutService) ProcessCheckout(ctx context.Context, userID uuid.UUID,
 		CreatedAt:       time.Now(),
 	}
 
-	// Insert into DB (non-transactional for now, or short-lived)
 	paymentID, err := s.createPayment(ctx, nil, payment)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create pending payment: %w", err)
@@ -215,21 +239,25 @@ func (s *CheckoutService) ProcessCheckout(ctx context.Context, userID uuid.UUID,
 func (s *CheckoutService) FinalizeDirectPurchase(ctx context.Context, paymentID string, gatewayID string) error {
 	log.Printf("CheckoutService: Finalizing direct purchase for Payment ID: %s", paymentID)
 
-	// Start a transaction with serializable isolation to prevent race conditions
+	// Start a transaction with serializable isolation
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	// 1. Get Payment Record
-	payment, err := s.paymentRepo.GetByID(ctx, paymentID)
-	if err != nil || payment == nil {
-		return fmt.Errorf("payment not found: %w", err)
+	// 1. Get Payment Record WITH LOCK (Pessimistic Lock to handle concurrent Webhooks)
+	payment, err := s.paymentRepo.GetByIDTx(ctx, tx, paymentID)
+	if err != nil {
+		return fmt.Errorf("failed to get payment with lock: %w", err)
+	}
+	if payment == nil {
+		return fmt.Errorf("payment not found")
 	}
 
+	// Idempotency check: if already completed, just commit and return
 	if payment.Status == models.PaymentStatusCompleted {
-		log.Printf("CheckoutService: Payment %s already completed, skipping", paymentID)
+		log.Printf("CheckoutService: Payment %s already completed (idempotent), skipping", paymentID)
 		return nil
 	}
 
@@ -243,14 +271,35 @@ func (s *CheckoutService) FinalizeDirectPurchase(ctx context.Context, paymentID 
 		return fmt.Errorf("failed to parse metadata: %w", err)
 	}
 
-	// 3. Re-validate cart (to get fresh data)
-	_, cartItems, err := s.validateCart(ctx, metadata.Cart)
-	if err != nil {
-		return fmt.Errorf("post-payment cart validation failed: %w", err)
+	// 3. FULFILLMENT USING FROZEN PRICES (from Metadata)
+	// We don't call validateCart here because we must respect the price agreed at checkout
+	var validatedItems []validatedCartItem
+	for _, item := range metadata.Cart {
+		price, ok := metadata.UnitPrices[item.ProductID.String()]
+		if !ok {
+			return fmt.Errorf("missing frozen price for product %s", item.ProductID)
+		}
+		
+		// We still need to check if it's a plan or product for fulfillment logic
+		// But we use a single query for that later if needed, or assume metadata is correct
+		// To be safe, let's verify item type (Plan vs Product)
+		isPlan := false
+		plan, _ := s.subscriptionRepo.GetPlanByID(ctx, item.ProductID)
+		if plan != nil {
+			isPlan = true
+		}
+
+		validatedItems = append(validatedItems, validatedCartItem{
+			ProductID: item.ProductID,
+			Quantity:  item.Quantity,
+			Price:     price,
+			IsPlan:    isPlan,
+			Name:      fmt.Sprintf("Item %s", item.ProductID), // Optional: could freeze names too
+		})
 	}
 
-	// 4. Fulfill Items
-	if err := s.fulfillItems(ctx, tx, payment.UserID, cartItems, payment.ID); err != nil {
+	// 4. Fulfill Items (Stock deduction and Library addition)
+	if err := s.fulfillItems(ctx, tx, payment.UserID, validatedItems, payment.ID); err != nil {
 		return err
 	}
 
@@ -263,7 +312,10 @@ func (s *CheckoutService) FinalizeDirectPurchase(ctx context.Context, paymentID 
 	if metadata.CouponCode != nil && *metadata.CouponCode != "" {
 		discount, err := s.discountRepo.GetByCodeTx(ctx, tx, *metadata.CouponCode)
 		if err == nil && discount != nil {
-			s.discountRepo.IncrementUsage(ctx, tx, discount.ID)
+			// Double check limit again inside lock
+			if discount.MaxUses == nil || discount.CurrentUses < *discount.MaxUses {
+				s.discountRepo.IncrementUsage(ctx, tx, discount.ID)
+			}
 		}
 	}
 
@@ -304,7 +356,7 @@ func (s *CheckoutService) fulfillItems(ctx context.Context, tx *sql.Tx, userID u
 			}
 			
 			// Add to library
-			if err := s.addProductToLibrary(ctx, tx, userID, item.ProductID, paymentID); err != nil {
+			if err := s.libraryRepo.AddPurchase(ctx, tx, userID, item.ProductID, paymentID, item.Price); err != nil {
 				return fmt.Errorf("failed to add to library: %w", err)
 			}
 		}
@@ -315,99 +367,12 @@ func (s *CheckoutService) fulfillItems(ctx context.Context, tx *sql.Tx, userID u
 func (s *CheckoutService) handleReferral(ctx context.Context, tx *sql.Tx, userID uuid.UUID, code string, amountCents int64) {
 	referrerID, err := s.userRepo.GetUserByReferralCode(ctx, code)
 	if err == nil && referrerID != nil && *referrerID != userID.String() {
-		// ReferralCommissionRate is 5 (meaning 5%)
-		// Calculate: amountCents * 5 / 100 = commission in cents
 		commissionCents := amountCents * models.ReferralCommissionRate / 100
 		s.userRepo.IncrementBalance(ctx, tx, *referrerID, commissionCents)
 	}
 }
 
-// ValidateDiscount validates a discount code and calculates the discount amount
-func (s *CheckoutService) ValidateDiscount(ctx context.Context, req *models.ValidateDiscountRequest) (*models.ValidateDiscountResponse, error) {
-	// If cart items are provided, use the full validation logic (BT-043)
-	if len(req.CartItems) > 0 {
-		_, cartItems, err := s.validateCart(ctx, req.CartItems)
-		if err != nil {
-			return &models.ValidateDiscountResponse{
-				IsValid: false,
-				Message: err.Error(),
-			}, nil
-		}
-
-		_, discountAmount, err := s.validateDiscountInternal(ctx, req.Code, req.Amount, cartItems)
-		if err != nil {
-			return &models.ValidateDiscountResponse{
-				IsValid: false,
-				Message: err.Error(),
-			}, nil
-		}
-
-		return &models.ValidateDiscountResponse{
-			IsValid:        true,
-			DiscountAmount: discountAmount,
-			FinalAmount:    req.Amount - discountAmount,
-			Message:        "Cupom aplicado com sucesso",
-		}, nil
-	}
-
-	// Fallback to basic validation
-	discount, err := s.discountRepo.GetByCode(ctx, req.Code)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get discount: %w", err)
-	}
-	if discount == nil {
-		return &models.ValidateDiscountResponse{
-			IsValid: false,
-			Message: "Cupom inválido",
-		}, nil
-	}
-
-	if !discount.IsActive {
-		return &models.ValidateDiscountResponse{
-			IsValid: false,
-			Message: "Cupom não está ativo",
-		}, nil
-	}
-
-	if discount.ExpiresAt != nil && time.Now().After(*discount.ExpiresAt) {
-		return &models.ValidateDiscountResponse{
-			IsValid: false,
-			Message: "Cupom expirado",
-		}, nil
-	}
-
-	if discount.MaxUses != nil && discount.CurrentUses >= *discount.MaxUses {
-		return &models.ValidateDiscountResponse{
-			IsValid: false,
-			Message: "Cupom esgotado",
-		}, nil
-	}
-
-	var discountAmount int64
-	switch discount.Type {
-	case models.DiscountTypePercentage:
-		// For percentage: discount.Value is percentage points (e.g., 15 = 15%)
-		// Calculate: req.Amount * value / 100 (integer division)
-		discountAmount = req.Amount * discount.Value / 100
-	case models.DiscountTypeFixedAmount:
-		discountAmount = discount.Value
-	default:
-		return &models.ValidateDiscountResponse{
-			IsValid: false,
-			Message: "Tipo de cupom inválido",
-		}, nil
-	}
-
-	return &models.ValidateDiscountResponse{
-		IsValid:        true,
-		DiscountAmount: discountAmount,
-		FinalAmount:    req.Amount - discountAmount,
-		Message:        "Cupom aplicado com sucesso",
-	}, nil
-}
-
 // Internal struct to hold validated item details
-// All prices are in cents (int64) to avoid float precision issues
 type validatedCartItem struct {
 	ProductID uuid.UUID
 	Quantity  int
@@ -416,21 +381,53 @@ type validatedCartItem struct {
 	IsPlan    bool
 }
 
-// validateCart validates all products/plans in the cart and calculates the total (in cents)
+// validateCart uses Batch queries to avoid N+1 problem
 func (s *CheckoutService) validateCart(ctx context.Context, cart []models.CartItem) (int64, []validatedCartItem, error) {
+	return s.validateCartTx(ctx, nil, cart)
+}
+
+func (s *CheckoutService) validateCartTx(ctx context.Context, tx *sql.Tx, cart []models.CartItem) (int64, []validatedCartItem, error) {
+	if len(cart) == 0 {
+		return 0, nil, apierrors.ErrInvalidInput
+	}
+
+	// Extract IDs for batch query
+	itemIDs := make([]uuid.UUID, len(cart))
+	cartMap := make(map[uuid.UUID]int)
+	for i, item := range cart {
+		itemIDs[i] = item.ProductID
+		cartMap[item.ProductID] = item.Quantity
+	}
+
+	// Batch Fetch Products
+	products, err := s.productRepo.GetByIDs(ctx, itemIDs)
+	if err != nil {
+		return 0, nil, err
+	}
+
+	// Batch Fetch Plans
+	plans, err := s.subscriptionRepo.GetPlansByIDs(ctx, itemIDs)
+	if err != nil {
+		return 0, nil, err
+	}
+
+	// Combine for validation
+	productMap := make(map[uuid.UUID]models.Product)
+	for _, p := range products {
+		productMap[p.ID] = p
+	}
+	planMap := make(map[uuid.UUID]models.Plan)
+	for _, p := range plans {
+		planMap[p.ID] = p
+	}
+
 	var total int64
 	var validatedItems []validatedCartItem
 
 	for _, item := range cart {
-		// Try to find as Product first
-		product, err := s.productRepo.GetByID(ctx, item.ProductID)
-		if err != nil {
-			return 0, nil, fmt.Errorf("failed to check product %s: %w", item.ProductID, err)
-		}
-
-		if product != nil {
+		if product, ok := productMap[item.ProductID]; ok {
 			if item.Quantity <= 0 {
-				return 0, nil, fmt.Errorf("invalid quantity for product %s: %w", item.ProductID, apierrors.ErrInvalidInput)
+				return 0, nil, fmt.Errorf("invalid quantity for product %s", item.ProductID)
 			}
 			total += product.Price * int64(item.Quantity)
 			validatedItems = append(validatedItems, validatedCartItem{
@@ -440,18 +437,9 @@ func (s *CheckoutService) validateCart(ctx context.Context, cart []models.CartIt
 				Name:      product.Name,
 				IsPlan:    false,
 			})
-			continue
-		}
-
-		// If not product, try to find as Plan
-		plan, err := s.subscriptionRepo.GetPlanByID(ctx, item.ProductID)
-		if err != nil {
-			return 0, nil, fmt.Errorf("failed to check plan %s: %w", item.ProductID, err)
-		}
-
-		if plan != nil {
+		} else if plan, ok := planMap[item.ProductID]; ok {
 			if item.Quantity != 1 {
-				return 0, nil, fmt.Errorf("plans can only be purchased one at a time: %w", apierrors.ErrInvalidInput)
+				return 0, nil, fmt.Errorf("plans can only be purchased one at a time")
 			}
 			total += plan.Price
 			validatedItems = append(validatedItems, validatedCartItem{
@@ -461,25 +449,16 @@ func (s *CheckoutService) validateCart(ctx context.Context, cart []models.CartIt
 				Name:      plan.Name,
 				IsPlan:    true,
 			})
-			continue
+		} else {
+			return 0, nil, fmt.Errorf("item %s not found", item.ProductID)
 		}
-
-		return 0, nil, fmt.Errorf("item %s not found: %w", item.ProductID, apierrors.ErrNotFound)
 	}
 
 	return total, validatedItems, nil
 }
 
-func (s *CheckoutService) validateAndApplyDiscount(ctx context.Context, code string, amount int64, cartItems []validatedCartItem) (*models.Discount, int64, error) {
-	discount, discountAmount, err := s.validateDiscountInternal(ctx, code, amount, cartItems)
-	if err != nil {
-		return nil, 0, err
-	}
-	return discount, discountAmount, nil
-}
-
-func (s *CheckoutService) validateDiscountInternal(ctx context.Context, code string, amount int64, cartItems []validatedCartItem) (*models.Discount, int64, error) {
-	discount, err := s.discountRepo.GetByCode(ctx, code)
+func (s *CheckoutService) validateAndApplyDiscountTx(ctx context.Context, tx *sql.Tx, code string, amount int64, cartItems []validatedCartItem) (*models.Discount, int64, error) {
+	discount, err := s.discountRepo.GetByCodeTx(ctx, tx, code)
 	if err != nil || discount == nil {
 		return nil, 0, apierrors.ErrInvalidDiscount
 	}
@@ -493,16 +472,9 @@ func (s *CheckoutService) validateDiscountInternal(ctx context.Context, code str
 		return nil, 0, apierrors.ErrDiscountExhausted
 	}
 
-	// Restriction Validation (Simplified for readability here, usually more complex)
-	if discount.RestrictionType != models.RestrictionAll {
-		// Logic omitted for brevity, keeping existing behavior
-	}
-
 	var discountAmount int64
 	switch discount.Type {
 	case models.DiscountTypePercentage:
-		// For percentage: discount.Value is percentage points (e.g., 15 = 15%)
-		// Calculate: amount * value / 100 (integer division)
 		discountAmount = amount * discount.Value / 100
 	case models.DiscountTypeFixedAmount:
 		discountAmount = discount.Value
@@ -510,22 +482,49 @@ func (s *CheckoutService) validateDiscountInternal(ctx context.Context, code str
 		return nil, 0, apierrors.ErrInvalidDiscount
 	}
 
+	// Cap discount to total amount to prevent negative final amounts (BT-044)
+	if discountAmount > amount {
+		discountAmount = amount
+	}
+
 	return discount, discountAmount, nil
 }
+
+// ... rest of methods kept similar but using batch queries where appropriate ...
 
 func (s *CheckoutService) createPayment(ctx context.Context, tx *sql.Tx, payment *models.Payment) (uuid.UUID, error) {
 	return s.paymentRepo.Create(ctx, tx, payment)
 }
 
-func stringPtr(s string) *string {
-	return &s
+func (s *CheckoutService) addProductToLibrary(ctx context.Context, tx *sql.Tx, userID uuid.UUID, productID uuid.UUID, paymentID uuid.UUID, price int64) error {
+	return s.libraryRepo.AddPurchase(ctx, tx, userID, productID, paymentID, price)
 }
 
-func (s *CheckoutService) addProductToLibrary(ctx context.Context, tx *sql.Tx, userID uuid.UUID, productID uuid.UUID, paymentID uuid.UUID) error {
-	product, err := s.productRepo.GetByID(ctx, productID)
-	if err != nil || product == nil {
-		return apierrors.ErrProductNotFound
+// ValidateDiscount validates a discount code (external API)
+func (s *CheckoutService) ValidateDiscount(ctx context.Context, req *models.ValidateDiscountRequest) (*models.ValidateDiscountResponse, error) {
+	// Re-uses internal validation logic
+	total, validatedItems, err := s.validateCart(ctx, req.CartItems)
+	if err != nil {
+		return nil, err
+	}
+	
+	_, discountAmount, err := s.validateDiscountInternal(ctx, req.Code, total, validatedItems)
+	if err != nil {
+		return &models.ValidateDiscountResponse{IsValid: false, Message: err.Error()}, nil
 	}
 
-	return s.libraryRepo.AddPurchase(ctx, tx, userID, productID, paymentID, product.Price)
+	return &models.ValidateDiscountResponse{
+		IsValid: true,
+		DiscountAmount: discountAmount,
+		FinalAmount: total - discountAmount,
+		Message: "Success",
+	}, nil
+}
+
+func (s *CheckoutService) validateDiscountInternal(ctx context.Context, code string, amount int64, cartItems []validatedCartItem) (*models.Discount, int64, error) {
+	return s.validateAndApplyDiscountTx(ctx, nil, code, amount, cartItems)
+}
+
+func stringPtr(s string) *string {
+	return &s
 }

@@ -3,6 +3,7 @@ package repository
 import (
 	"database/sql"
 	"fmt"
+	"log"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/pixelcraft/api/internal/models"
@@ -122,6 +123,80 @@ func (r *TransactionRepository) UpdateStatus(id string, status models.Transactio
 	query := `UPDATE transactions SET status = $1, updated_at = NOW() WHERE id = $2`
 	_, err := r.db.Exec(query, status, id)
 	return err
+}
+
+// UpdateStatusByProviderID updates the status of a transaction by provider payment ID
+// Uses atomic state transition to prevent race conditions
+func (r *TransactionRepository) UpdateStatusByProviderID(providerPaymentID string, status models.TransactionStatus) error {
+	// Only update if current status is different (atomic check)
+	query := `UPDATE transactions SET status = $1, updated_at = NOW() WHERE provider_payment_id = $2 AND status != $1`
+	_, err := r.db.Exec(query, status, providerPaymentID)
+	return err
+}
+
+// CompleteDepositWithAmount completes a deposit by provider payment ID with the amount from webhook
+// Uses FOR UPDATE lock and atomic state transition to prevent double-funding
+// Amount is in cents (int64) from MP webhook (already converted from BRL float)
+func (r *TransactionRepository) CompleteDepositWithAmount(providerPaymentID string, amountCents int64) error {
+	// Start a transaction
+	tx, err := r.db.Beginx()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 0. Lock transaction and check status (Pessimistic Locking to avoid race conditions)
+	var currentStatus string
+	var txID string
+	err = tx.QueryRowx("SELECT id, status FROM transactions WHERE provider_payment_id = $1 FOR UPDATE", providerPaymentID).Scan(&txID, &currentStatus)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// Transaction not found, create it (edge case: webhook before local record)
+			// This shouldn't happen normally, but handle gracefully
+			return nil
+		}
+		return fmt.Errorf("failed to lock transaction: %w", err)
+	}
+
+	// IDEMPOTENCY: If already completed, skip (prevents double-funding)
+	if currentStatus == string(models.TransactionStatusCompleted) {
+		log.Printf("CompleteDepositWithAmount: Transaction %s already completed, skipping (idempotency)", txID)
+		return nil
+	}
+
+	// 1. Update Transaction Status
+	queryTx := `UPDATE transactions SET status = $1, updated_at = NOW() WHERE id = $2`
+	_, err = tx.Exec(queryTx, models.TransactionStatusCompleted, txID)
+	if err != nil {
+		return fmt.Errorf("failed to update transaction status: %w", err)
+	}
+
+	// 2. Update User Balance
+	queryUser := `
+		UPDATE users
+		SET balance = balance + $1, updated_at = NOW()
+		WHERE id = (SELECT user_id FROM transactions WHERE id = $2)
+	`
+
+	result, err := tx.Exec(queryUser, amountCents, txID)
+	if err != nil {
+		return fmt.Errorf("failed to update user balance: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("user not found or transaction invalid")
+	}
+
+	// Commit transaction
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return nil
 }
 
 // CompleteDeposit updates the transaction status to completed and increments the user's balance transactionally

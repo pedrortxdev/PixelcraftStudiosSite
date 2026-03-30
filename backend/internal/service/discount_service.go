@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/pixelcraft/api/internal/apierrors"
@@ -19,8 +20,8 @@ func NewDiscountService(repo *repository.DiscountRepository) *DiscountService {
 	return &DiscountService{repo: repo}
 }
 
-func (s *DiscountService) ListDiscounts(ctx context.Context) ([]models.Discount, error) {
-	return s.repo.List(ctx)
+func (s *DiscountService) ListDiscounts(ctx context.Context, includeDeleted bool) ([]models.Discount, error) {
+	return s.repo.List(ctx, includeDeleted)
 }
 
 func (s *DiscountService) GetDiscount(ctx context.Context, id uuid.UUID) (*models.Discount, error) {
@@ -28,7 +29,7 @@ func (s *DiscountService) GetDiscount(ctx context.Context, id uuid.UUID) (*model
 	if err != nil {
 		return nil, err
 	}
-	if discount == nil {
+	if discount == nil || !discount.IsActive {
 		return nil, apierrors.ErrDiscountNotFound
 	}
 	return discount, nil
@@ -41,19 +42,16 @@ func (s *DiscountService) CreateDiscount(ctx context.Context, req *models.Create
 		return nil, err
 	}
 
-	// 2. Check if code already exists (case-insensitive)
-	exists, err := s.repo.CodeExists(ctx, strings.ToUpper(req.Code))
-	if err != nil {
-		return nil, err
-	}
-	if exists {
-		return nil, apierrors.ErrDiscountCodeAlreadyExists
+	// 2. Validate code length and format
+	normalizedCode := strings.ToUpper(strings.TrimSpace(req.Code))
+	if len(normalizedCode) < 3 || strings.Contains(normalizedCode, " ") {
+		return nil, fmt.Errorf("%w: código deve ter no mínimo 3 caracteres e não conter espaços", apierrors.ErrInvalidInput)
 	}
 
 	// 3. Create discount
 	discount := &models.Discount{
 		ID:              uuid.New(),
-		Code:            strings.ToUpper(req.Code), // Normalize to uppercase
+		Code:            normalizedCode, // Normalize to uppercase
 		Type:            req.Type,
 		Value:           req.Value,
 		IsReferral:      req.IsReferral,
@@ -66,7 +64,7 @@ func (s *DiscountService) CreateDiscount(ctx context.Context, req *models.Create
 		IsActive:        true,
 	}
 
-	err = s.repo.Create(ctx, discount)
+	err := s.repo.Create(ctx, discount)
 	if err != nil {
 		return nil, err
 	}
@@ -76,12 +74,12 @@ func (s *DiscountService) CreateDiscount(ctx context.Context, req *models.Create
 
 // UpdateDiscount updates an existing discount with validation
 func (s *DiscountService) UpdateDiscount(ctx context.Context, id uuid.UUID, req *models.UpdateDiscountRequest) error {
-	// 1. Check if discount exists
+	// 1. Check if discount exists and is active
 	existing, err := s.repo.GetByID(ctx, id)
 	if err != nil {
 		return err
 	}
-	if existing == nil {
+	if existing == nil || !existing.IsActive {
 		return apierrors.ErrDiscountNotFound
 	}
 
@@ -100,15 +98,13 @@ func (s *DiscountService) UpdateDiscount(ctx context.Context, id uuid.UUID, req 
 		}
 	}
 
-	// 3. Check if code is being changed and if new code already exists
-	if req.Code != nil && strings.ToUpper(*req.Code) != strings.ToUpper(existing.Code) {
-		exists, err := s.repo.CodeExists(ctx, strings.ToUpper(*req.Code))
-		if err != nil {
-			return err
+	// 3. Check if code is being changed and validate format
+	if req.Code != nil {
+		normalized := strings.ToUpper(strings.TrimSpace(*req.Code))
+		if len(normalized) < 3 || strings.Contains(normalized, " ") {
+			return fmt.Errorf("%w: código deve ter no mínimo 3 caracteres e não conter espaços", apierrors.ErrInvalidInput)
 		}
-		if exists {
-			return apierrors.ErrDiscountCodeAlreadyExists
-		}
+		req.Code = &normalized // Assign back the normalized code
 	}
 
 	// 4. Build domain-level update struct (avoids leaking DB column names)
@@ -123,23 +119,23 @@ func (s *DiscountService) UpdateDiscount(ctx context.Context, id uuid.UUID, req 
 		MaxUses:         req.MaxUses,
 	}
 
-	// Normalize code to uppercase if provided
-	if updates.Code != nil {
-		normalized := strings.ToUpper(*updates.Code)
-		updates.Code = &normalized
+	// Normalize code to uppercase if provided already handled
+	err = s.repo.Update(ctx, id, updates)
+	if err != nil {
+		return err
 	}
-
-	return s.repo.Update(ctx, id, updates)
+	
+	return nil
 }
 
 // DeleteDiscount soft deletes (deactivates) a discount
 func (s *DiscountService) DeleteDiscount(ctx context.Context, id uuid.UUID) error {
-	// 1. Check if discount exists
+	// 1. Check if discount exists and is active
 	existing, err := s.repo.GetByID(ctx, id)
 	if err != nil {
 		return err
 	}
-	if existing == nil {
+	if existing == nil || !existing.IsActive {
 		return apierrors.ErrDiscountNotFound
 	}
 

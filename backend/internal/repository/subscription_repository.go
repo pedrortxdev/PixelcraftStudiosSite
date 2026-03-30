@@ -86,6 +86,47 @@ func (r *SubscriptionRepository) GetPlanByID(ctx context.Context, id uuid.UUID) 
 	return &p, nil
 }
 
+// GetPlansByIDs retrieves multiple plans by their IDs using a single query
+func (r *SubscriptionRepository) GetPlansByIDs(ctx context.Context, ids []uuid.UUID) ([]models.Plan, error) {
+	if len(ids) == 0 {
+		return []models.Plan{}, nil
+	}
+
+	query := `
+		SELECT id, name, description, price, image_url, is_active, features, created_at, updated_at
+		FROM plans
+		WHERE id = ANY($1)
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, ids)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query plans by IDs: %w", err)
+	}
+	defer rows.Close()
+
+	var plans []models.Plan
+	for rows.Next() {
+		var p models.Plan
+		var featuresJSON sql.NullString
+		err := rows.Scan(
+			&p.ID, &p.Name, &p.Description, &p.Price, &p.ImageURL, &p.IsActive, &featuresJSON, &p.CreatedAt, &p.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan plan: %w", err)
+		}
+		if featuresJSON.Valid {
+			if err := json.Unmarshal([]byte(featuresJSON.String), &p.Features); err != nil {
+				log.Printf("Failed to decode features JSON: %v", err)
+			}
+		} else {
+			p.Features = []string{}
+		}
+		plans = append(plans, p)
+	}
+
+	return plans, nil
+}
+
 // CreatePlan creates a new plan
 func (r *SubscriptionRepository) CreatePlan(ctx context.Context, plan *models.Plan) error {
 	featuresJSON, err := json.Marshal(plan.Features)

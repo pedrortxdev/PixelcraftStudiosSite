@@ -20,7 +20,8 @@ func NewDiscountHandler(service *service.DiscountService) *DiscountHandler {
 }
 
 func (h *DiscountHandler) ListDiscounts(c *gin.Context) {
-	discounts, err := h.service.ListDiscounts(c.Request.Context())
+	includeDeleted := c.Query("include_deleted") == "true"
+	discounts, err := h.service.ListDiscounts(c.Request.Context(), includeDeleted)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list discounts"})
 		return
